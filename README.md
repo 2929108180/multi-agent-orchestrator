@@ -22,6 +22,22 @@ Version 1 focuses on a local CLI workflow:
 4. Run review and repair loops
 5. Store outputs and traces locally
 
+## Project Docs
+
+- `docs/architecture-baseline.md`: fixed architecture and iteration rules
+- `docs/v1-target.md`: version 1 goal and acceptance criteria
+- `docs/progress.md`: visible delivery checklist
+
+## Useful Commands
+
+```powershell
+mao doctor
+mao goals
+mao status
+mao roadmap
+mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock
+```
+
 ## Development
 
 Create a virtual environment and install the project in editable mode.

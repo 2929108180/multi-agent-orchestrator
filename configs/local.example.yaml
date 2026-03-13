@@ -1,0 +1,19 @@
+version: 1
+project_name: multi-agent-orchestrator
+runtime_root: runtime
+artifacts_root: artifacts
+workflow:
+  max_repair_rounds: 2
+providers:
+  architect:
+    adapter: mock
+    model: mock/architect
+  frontend:
+    adapter: mock
+    model: mock/frontend
+  backend:
+    adapter: mock
+    model: mock/backend
+  reviewer:
+    adapter: mock
+    model: mock/reviewer
