@@ -39,6 +39,8 @@ mao validate --config configs/live.multi-provider.example.yaml
 mao roadmap
 mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock
 mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock --with-worktrees
+mao chat --mock
+mao chat --mock --with-worktrees
 mao mcp-serve --transport stdio
 mao mcp-serve --transport streamable-http --host 127.0.0.1 --port 8000
 ```

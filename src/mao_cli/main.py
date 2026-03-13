@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from mao_cli.chat import ChatSession
 from mao_cli.config import load_config
 from mao_cli.mcp_server import run_mcp_server
 from mao_cli.orchestrator import execute_workflow
@@ -207,6 +208,44 @@ def run(
         with_worktrees=with_worktrees,
     )
     console.print(f"Run artifacts saved to: {run_dir}")
+
+
+@app.command()
+def chat(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file.",
+    ),
+    output_dir: Path | None = typer.Option(
+        None,
+        "--output-dir",
+        help="Directory for saved run artifacts.",
+    ),
+    mock: bool = typer.Option(
+        True,
+        "--mock/--live",
+        help="Use mock providers by default for chat sessions.",
+    ),
+    with_worktrees: bool = typer.Option(
+        False,
+        "--with-worktrees",
+        help="Create isolated git worktrees for frontend and backend outputs.",
+    ),
+) -> None:
+    """Start an interactive local chat session over the current workflow."""
+    project_root = _project_root()
+    config_path = _resolve_config_path(project_root, config)
+    session = ChatSession(
+        project_root=project_root,
+        config_path=config_path,
+        output_dir=output_dir,
+        mock=mock,
+        with_worktrees=with_worktrees,
+        console=console,
+    )
+    session.run()
 
 
 @app.command("mcp-serve")

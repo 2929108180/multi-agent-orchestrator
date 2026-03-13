@@ -129,3 +129,21 @@ def test_run_command_creates_worktrees(tmp_path: Path) -> None:
     for workspace in payload["workspaces"]:
         assert Path(workspace["path"]).exists()
         assert Path(workspace["note_path"]).exists()
+
+
+def test_chat_runs_workflow(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--mock",
+            "--output-dir",
+            str(tmp_path),
+        ],
+        input="Build a task tracker\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Running workflow..." in result.stdout
+    assert "Run artifacts saved to:" in result.stdout
