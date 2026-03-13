@@ -32,8 +32,10 @@ Version 1 focuses on a local CLI workflow:
 
 ```powershell
 mao doctor
+mao doctor --config configs/live.multi-provider.example.yaml
 mao goals
 mao status
+mao validate --config configs/live.multi-provider.example.yaml
 mao roadmap
 mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock
 ```

@@ -38,3 +38,18 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
 
     assert summary.exists()
     assert payload["verdicts"][-1]["approved"] is True
+
+
+def test_validate_command_fails_when_live_env_missing() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "validate",
+            "--config",
+            "configs/live.multi-provider.example.yaml",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Missing environment variable" in result.stdout

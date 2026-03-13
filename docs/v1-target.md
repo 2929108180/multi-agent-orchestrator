@@ -20,6 +20,7 @@ A user can provide a requirement and get:
 - Support at least four roles: architect, frontend, backend, reviewer
 - Route model calls through one gateway abstraction
 - Support mock mode for local development without external keys
+- Validate live provider readiness from config and environment variables
 - Save each run as `run.json` and `summary.md`
 - Provide visible progress tracking in the repository
 

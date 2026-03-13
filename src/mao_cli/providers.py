@@ -1,10 +1,23 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 from litellm import completion
 
 from mao_cli.config import AppConfig, ProviderConfig
+
+
+@dataclass
+class ProviderHealth:
+    role: str
+    adapter: str
+    model: str
+    mode: str
+    api_key_env: str | None
+    api_key_present: bool
+    ready: bool
+    note: str
 
 
 class ModelGateway:
@@ -20,11 +33,12 @@ class ModelGateway:
 
     def _litellm_complete(self, provider: ProviderConfig, prompt: str) -> str:
         extra_kwargs = {}
-        if provider.api_key_env:
-            api_key = os.getenv(provider.api_key_env)
+        effective_api_key_env = provider.effective_api_key_env
+        if effective_api_key_env:
+            api_key = os.getenv(effective_api_key_env)
             if not api_key:
                 raise RuntimeError(
-                    f"Missing environment variable `{provider.api_key_env}` for model `{provider.model}`."
+                    f"Missing environment variable `{effective_api_key_env}` for model `{provider.model}`."
                 )
             extra_kwargs["api_key"] = api_key
         if provider.base_url:
@@ -106,3 +120,38 @@ class ModelGateway:
                 ]
             )
         return f"Unhandled mock role `{role}`. Prompt was: {prompt}"
+
+
+def inspect_providers(config: AppConfig, force_mock: bool = False) -> list[ProviderHealth]:
+    health_rows: list[ProviderHealth] = []
+    for role, provider in config.providers.items():
+        mode = "mock" if force_mock or provider.adapter == "mock" else "live"
+        effective_api_key_env = provider.effective_api_key_env
+        api_key_present = bool(effective_api_key_env and os.getenv(effective_api_key_env))
+
+        if mode == "mock":
+            ready = True
+            note = "Mock mode is ready."
+        elif not effective_api_key_env:
+            ready = False
+            note = "No API key env configured for this live provider."
+        elif not api_key_present:
+            ready = False
+            note = f"Missing environment variable `{effective_api_key_env}`."
+        else:
+            ready = True
+            note = f"Environment variable `{effective_api_key_env}` is available."
+
+        health_rows.append(
+            ProviderHealth(
+                role=role,
+                adapter=provider.adapter,
+                model=provider.model,
+                mode=mode,
+                api_key_env=effective_api_key_env,
+                api_key_present=api_key_present,
+                ready=ready,
+                note=note,
+            )
+        )
+    return health_rows

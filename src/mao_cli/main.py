@@ -8,6 +8,7 @@ from rich.table import Table
 
 from mao_cli.config import load_config
 from mao_cli.orchestrator import execute_workflow
+from mao_cli.providers import inspect_providers
 
 app = typer.Typer(
     help="CLI for orchestrating cross-vendor coding agents.",
@@ -21,11 +22,26 @@ def _project_root() -> Path:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file.",
+    ),
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Force mock mode when reporting provider readiness.",
+    ),
+) -> None:
     """Show local project health information."""
     project_root = _project_root()
     runtime_dir = project_root / "runtime"
     artifacts_dir = project_root / "artifacts"
+    config_path = config if config.is_absolute() else project_root / config
+    loaded = load_config(config_path)
+    provider_health = inspect_providers(config=loaded, force_mock=mock)
 
     table = Table(title="Environment")
     table.add_column("Item")
@@ -33,8 +49,29 @@ def doctor() -> None:
     table.add_row("Project root", str(project_root))
     table.add_row("Runtime dir", str(runtime_dir))
     table.add_row("Artifacts dir", str(artifacts_dir))
+    table.add_row("Config", str(config_path))
     table.add_row("Status", "ready for local development")
     console.print(table)
+
+    provider_table = Table(title="Providers")
+    provider_table.add_column("Role")
+    provider_table.add_column("Adapter")
+    provider_table.add_column("Mode")
+    provider_table.add_column("Model")
+    provider_table.add_column("API Env")
+    provider_table.add_column("Ready")
+    provider_table.add_column("Note")
+    for row in provider_health:
+        provider_table.add_row(
+            row.role,
+            row.adapter,
+            row.mode,
+            row.model,
+            row.api_key_env or "-",
+            "yes" if row.ready else "no",
+            row.note,
+        )
+    console.print(provider_table)
 
 
 @app.command()
@@ -73,10 +110,41 @@ def status() -> None:
     table.add_row("Visible goals", "documented")
     table.add_row("Config models", "implemented")
     table.add_row("Mock multi-agent flow", "implemented")
-    table.add_row("Live provider helpers", "next")
+    table.add_row("Live provider helpers", "implemented")
     table.add_row("MCP integration", "pending")
     table.add_row("Git worktree flow", "pending")
     console.print(table)
+
+
+@app.command()
+def validate(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file.",
+    ),
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Treat all providers as mock when validating readiness.",
+    ),
+) -> None:
+    """Validate provider configuration and environment readiness."""
+    project_root = _project_root()
+    config_path = config if config.is_absolute() else project_root / config
+    loaded = load_config(config_path)
+    rows = inspect_providers(config=loaded, force_mock=mock)
+    not_ready = [row for row in rows if not row.ready]
+
+    for row in rows:
+        console.print(
+            f"[{row.role}] adapter={row.adapter} model={row.model} ready={row.ready} note={row.note}"
+        )
+
+    if not_ready:
+        raise typer.Exit(code=1)
+    console.print("All configured providers are ready.")
 
 
 @app.command()

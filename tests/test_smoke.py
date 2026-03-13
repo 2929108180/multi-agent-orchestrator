@@ -5,7 +5,9 @@ from mao_cli.main import app
 
 def test_doctor_command() -> None:
     runner = CliRunner()
-    result = runner.invoke(app, ["doctor"])
+    result = runner.invoke(app, ["doctor", "--mock"])
 
     assert result.exit_code == 0
     assert "ready for local development" in result.stdout
+    assert "architect" in result.stdout
+    assert "mock" in result.stdout
