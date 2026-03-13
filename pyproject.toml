@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-agent-orchestrator"
+version = "0.1.0"
+description = "CLI-first orchestration system for cross-vendor coding agents."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "huangrui" }
+]
+dependencies = [
+  "typer>=0.16,<1.0",
+  "rich>=14.0,<15.0",
+  "pydantic>=2.11,<3.0",
+  "PyYAML>=6.0,<7.0",
+  "litellm>=1.65,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-cov>=6.0,<7.0",
+]
+
+[project.scripts]
+mao = "mao_cli.main:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
