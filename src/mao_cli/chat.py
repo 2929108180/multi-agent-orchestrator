@@ -10,6 +10,7 @@ from rich.text import Text
 
 from mao_cli.config import AppConfig, load_config
 from mao_cli.core.models import WorkflowEvent
+from mao_cli.gitops import WorkerWorkspace, apply_proposal_to_workspace, ensure_named_worktree
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import validate_requirement
@@ -121,6 +122,7 @@ class ChatSession:
         self.team_context = build_team_context(project_root)
         self.session = self._load_or_create_session(session_id=session_id, resume_latest=resume_latest)
         self.last_run_dir = self._derive_last_run_dir()
+        self.current_integration_workspace: WorkerWorkspace | None = None
         self._preflight_live_mode()
 
     def print_welcome(self) -> None:
@@ -507,6 +509,7 @@ class ChatSession:
             self.console.print("Selected approval item was not found.")
             return
         self._print_approval_item(item)
+        self._prompt_review_choice(item)
 
     def _pick_approval(self, argument: str) -> None:
         if not argument.isdigit():
@@ -524,6 +527,7 @@ class ChatSession:
             item.item_id,
         )
         self._print_approval_item(item)
+        self._prompt_review_choice(item)
 
     def _update_selected_approval(self, status: str) -> None:
         if not self.session.current_approval_id:
@@ -540,6 +544,8 @@ class ChatSession:
             item_id=item.item_id,
             status=status,  # type: ignore[arg-type]
         )
+        if status == "approved":
+            self._apply_approved_item(item)
         self.console.print(f"{status}: {item.path}")
 
     def _print_approval_item(self, item: ApprovalQueueItem) -> None:
@@ -559,9 +565,52 @@ class ChatSession:
         )
         if item.diff_path and Path(item.diff_path).exists():
             self.console.print("--- diff ---")
-            self.console.print(Path(item.diff_path).read_text(encoding="utf-8"))
+            for raw_line in Path(item.diff_path).read_text(encoding="utf-8").splitlines():
+                if raw_line.startswith("+++ ") or raw_line.startswith("--- "):
+                    self.console.print(f"[bold]{raw_line}[/bold]")
+                elif raw_line.startswith("+") and not raw_line.startswith("+++"):
+                    self.console.print(f"[green]{raw_line}[/green]")
+                elif raw_line.startswith("-") and not raw_line.startswith("---"):
+                    self.console.print(f"[red]{raw_line}[/red]")
+                elif raw_line.startswith("@@"):
+                    self.console.print(f"[cyan]{raw_line}[/cyan]")
+                else:
+                    self.console.print(raw_line)
         else:
             self.console.print("No diff available for this item.")
+
+    def _prompt_review_choice(self, item: ApprovalQueueItem) -> None:
+        self.console.print("Review choice: y=yes / n=no / d=defer / b=back")
+        try:
+            choice = input("review> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("Review prompt cancelled.")
+            return
+        if choice in {"y", "yes"}:
+            self._update_selected_approval("approved")
+            return
+        if choice in {"n", "no"}:
+            self._update_selected_approval("rejected")
+            return
+        if choice in {"d", "defer"}:
+            self._update_selected_approval("deferred")
+            return
+        self.console.print("Left approval item unchanged.")
+
+    def _apply_approved_item(self, item: ApprovalQueueItem) -> None:
+        integration_root = self.project_root.parent / f"{self.project_root.name}-integrations"
+        workspace = ensure_named_worktree(
+            repository_root=self.project_root,
+            workspace_root=integration_root / item.run_id,
+            worktree_name="integration",
+        )
+        self.current_integration_workspace = workspace
+        target_path = apply_proposal_to_workspace(
+            workspace=workspace,
+            relative_path=item.path,
+            proposal_path=item.proposal_path,
+        )
+        self.console.print(f"applied_to={target_path}")
 
     def _resume_session(self) -> None:
         sessions = list_sessions(self.project_root, self.config.runtime_root, limit=20)

@@ -142,7 +142,7 @@ def append_approval_items(
         if item.item_id not in existing_ids:
             session.approval_queue.append(item)
     if not session.current_approval_id:
-        next_item = next((item for item in session.approval_queue if item.status in {"pending", "deferred"}), None)
+        next_item = _next_approval_item(session)
         if next_item:
             session.current_approval_id = next_item.item_id
     save_session(project_root, runtime_root, session)
@@ -168,10 +168,10 @@ def update_approval_item(
         if item.item_id == item_id:
             item.status = status
             break
-    if session.current_approval_id == item_id and status in {"approved", "rejected"}:
+    if session.current_approval_id == item_id and status in {"approved", "rejected", "deferred"}:
         session.current_approval_id = ""
     if not session.current_approval_id:
-        next_item = next((item for item in session.approval_queue if item.status in {"pending", "deferred"}), None)
+        next_item = _next_approval_item(session)
         if next_item:
             session.current_approval_id = next_item.item_id
     save_session(project_root, runtime_root, session)
@@ -187,6 +187,13 @@ def select_approval_item(
     session.current_approval_id = item_id
     save_session(project_root, runtime_root, session)
     return session
+
+
+def _next_approval_item(session: ChatSessionState) -> ApprovalQueueItem | None:
+    pending = next((item for item in session.approval_queue if item.status == "pending"), None)
+    if pending is not None:
+        return pending
+    return next((item for item in session.approval_queue if item.status == "deferred"), None)
 
 
 def clear_turns(project_root: Path, runtime_root: str, session: ChatSessionState) -> ChatSessionState:

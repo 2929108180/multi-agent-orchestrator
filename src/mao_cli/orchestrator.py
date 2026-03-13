@@ -972,16 +972,7 @@ def _latest_exchange_by_role(run: WorkflowRun) -> dict[str, AgentExchange]:
 
 
 def _build_proposed_content(decision: IntegrationDecision, exchange: AgentExchange | None) -> str:
-    body = exchange.response if exchange is not None else "No worker response available."
-    return "\n".join(
-        [
-            f"# Proposed change for {decision.path}",
-            f"# role: {decision.role}",
-            f"# model: {decision.model}",
-            "",
-            body,
-        ]
-    )
+    return exchange.response if exchange is not None else "No worker response available."
 
 
 def _safe_diff_name(path: str) -> str:
