@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from io import StringIO
 from pathlib import Path
 
 from rich.console import Console
@@ -32,6 +33,7 @@ from mao_cli.sessions import (
     ChatSessionState,
     append_approval_items,
     append_turn,
+    append_transcript_entry,
     build_conversation_context,
     build_review_memory,
     build_task_memory,
@@ -41,6 +43,7 @@ from mao_cli.sessions import (
     load_latest_session,
     load_session,
     list_sessions,
+    replay_lines,
     select_approval_item,
     update_approval_item,
 )
@@ -146,28 +149,32 @@ class ChatSession:
 
     def print_welcome(self) -> None:
         self.console.print(self._build_banner())
-        self.console.print("[bold white]Multi-Agent Orchestrator chat[/bold white]")
-        self.console.print("[cyan]Type a requirement to run the workflow.[/cyan]")
-        self.console.print(
+        self._say("[bold white]Multi-Agent Orchestrator chat[/bold white]", record=False)
+        self._say("[cyan]Type a requirement to run the workflow.[/cyan]", record=False)
+        self._say(
             f"[white]session={self.session.session_id}[/white] "
             f"[green]mode={'mock' if self.mock else 'live'}[/green] "
-            f"[magenta]skills={len(self.skills)}[/magenta]"
+            f"[magenta]skills={len(self.skills)}[/magenta]",
+            record=False,
         )
         if self._interactive_completion_available():
-            self.console.print("[green]Type `/` to see commands. Use `Tab` to complete slash commands.[/green]")
+            self._say("[green]Type `/` to see commands. Use `Tab` to complete slash commands.[/green]", record=False)
         else:
-            self.console.print(
-                "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]"
+            self._say(
+                "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]",
+                record=False,
             )
-        self.console.print(
+        self._say(
             "[magenta]Built-in commands:[/magenta] "
             "/help /status /doctor /mode /history /context /skills /mcp /merge "
             "/skill-import-local /mcp-import-local /grant-skill /grant-mcp "
-            "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /exit"
+            "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /exit",
+            record=False,
         )
 
     def run(self) -> None:
         self.print_welcome()
+        self._replay_transcript_if_needed()
         while True:
             try:
                 raw = self._prompt()
@@ -181,6 +188,13 @@ class ChatSession:
             line = raw.lstrip("\ufeff").strip()
             if not line:
                 continue
+            self.session = append_transcript_entry(
+                self.project_root,
+                self.config.runtime_root,
+                self.session,
+                speaker="user",
+                content=line,
+            )
             if line.startswith("/"):
                 if self._handle_command(line):
                     return
@@ -216,7 +230,7 @@ class ChatSession:
     def _handle_command(self, line: str) -> bool:
         command, argument = self._parse_command(line.lower())
         if command in {"/exit", "/quit"}:
-            self.console.print("Chat closed.")
+            self._say("Chat closed.")
             return True
         if command == "/help":
             table = create_table("Chat Commands")
@@ -224,11 +238,11 @@ class ChatSession:
             table.add_column("Purpose")
             for name, purpose in CHAT_COMMANDS.items():
                 table.add_row(name, purpose)
-            self.console.print("Enter a product or coding requirement to run one workflow.")
-            self.console.print(table)
+            self._say("Enter a product or coding requirement to run one workflow.")
+            self._say_renderable(table)
             return False
         if command == "/status":
-            self.console.print(
+            self._say(
                 "\n".join(
                     [
                         f"session_id={self.session.session_id}",
@@ -243,12 +257,12 @@ class ChatSession:
             )
             return False
         if command == "/mode":
-            self.console.print(f"mode={'mock' if self.mock else 'live'}")
+            self._say(f"mode={'mock' if self.mock else 'live'}")
             return False
         if command == "/doctor":
             rows = inspect_providers(self.config, force_mock=self.mock)
             for row in rows:
-                self.console.print(
+                self._say(
                     f"[{row.role}] adapter={row.adapter} model={row.model} ready={row.ready} note={row.note}"
                 )
             return False
@@ -257,12 +271,12 @@ class ChatSession:
             return False
         if command == "/context":
             context = build_conversation_context(self.session)
-            self.console.print(context or "No conversation context yet.")
+            self._say(context or "No conversation context yet.")
             return False
         if command == "/clear":
             self.session = clear_turns(self.project_root, self.config.runtime_root, self.session)
             self.last_run_dir = None
-            self.console.print("Session turns cleared.")
+            self._say("Session turns cleared.")
             return False
         if command == "/skills":
             self._print_skills()
@@ -314,22 +328,22 @@ class ChatSession:
             return False
         if command == "/last":
             if self.last_run_dir is None:
-                self.console.print("No run has been executed in this chat session yet.")
+                self._say("No run has been executed in this chat session yet.")
                 return False
-            self.console.print(f"last_run={self.last_run_dir}")
+            self._say(f"last_run={self.last_run_dir}")
             return False
 
-        self.console.print(f"Unknown command: {line}. Use /help.")
+        self._say(f"Unknown command: {line}. Use /help.")
         return False
 
     def _run_requirement(self, requirement: str) -> None:
         try:
             requirement = validate_requirement(requirement)
         except ValueError as exc:
-            self.console.print(f"Invalid requirement: {exc}")
+            self._say(f"Invalid requirement: {exc}")
             return
 
-        self.console.print("Running workflow...")
+        self._say("Running workflow...")
         conversation_context = build_conversation_context(self.session)
         task_memories = {
             "frontend": build_task_memory(self.session, "frontend"),
@@ -374,12 +388,12 @@ class ChatSession:
         )
         self._append_run_approval_items(run_dir)
 
-        self.console.print(f"Run artifacts saved to: {run_dir}")
-        self.console.print(f"approved={approved}")
-        self.console.print(f"summary={summary}")
+        self._say(f"Run artifacts saved to: {run_dir}")
+        self._say(f"approved={approved}")
+        self._say(f"summary={summary}")
         pending = [item for item in self.session.approval_queue if item.status in {"pending", "deferred"}]
         if pending:
-            self.console.print(f"approval_queue={len(pending)} pending items. Use /queue or /review.")
+            self._say(f"approval_queue={len(pending)} pending items. Use /queue or /review.")
 
     def _interactive_completion_available(self) -> bool:
         return PromptSession is not None and sys.stdin.isatty() and sys.stdout.isatty()
@@ -395,7 +409,7 @@ class ChatSession:
     def _handle_workflow_event(self, event: WorkflowEvent) -> None:
         line = self._format_event(event)
         if line:
-            self.console.print(line)
+            self._say(line)
 
     def _format_event(self, event: WorkflowEvent) -> str:
         role = event.role or "workflow"
@@ -520,7 +534,7 @@ class ChatSession:
 
     def _print_history(self) -> None:
         if not self.session.turns:
-            self.console.print("No saved turns in this session yet.")
+            self._say("No saved turns in this session yet.")
             return
         table = create_table("Session History")
         table.add_column("Turn")
@@ -528,23 +542,23 @@ class ChatSession:
         table.add_column("Summary")
         for turn in self.session.turns[-10:]:
             table.add_row(turn.turn_id, str(turn.approved), turn.summary)
-        self.console.print(table)
+        self._say_renderable(table)
 
     def _print_skills(self) -> None:
         if not self.skills:
-            self.console.print("No local skills discovered.")
+            self._say("No local skills discovered.")
             return
         table = create_table("Available Skills")
         table.add_column("Name")
         table.add_column("Description")
         for skill in self.skills[:20]:
             table.add_row(skill.name, skill.description)
-        self.console.print(table)
+        self._say_renderable(table)
 
     def _print_mcp_servers(self) -> None:
         servers = load_mcp_registry(self.project_root, self.config.runtime_root)
         if not servers:
-            self.console.print("No MCP servers registered.")
+            self._say("No MCP servers registered.")
             return
         table = create_table("Registered MCP Servers")
         table.add_column("Name")
@@ -552,12 +566,12 @@ class ChatSession:
         table.add_column("Source")
         for server in servers:
             table.add_row(server.name, server.transport, server.source)
-        self.console.print(table)
+        self._say_renderable(table)
 
     def _print_merge_candidates(self) -> None:
         candidates = list_merge_candidates(self.project_root, self.config.runtime_root, limit=20)
         if not candidates:
-            self.console.print("No merge candidates available.")
+            self._say("No merge candidates available.")
             return
         table = create_table("Merge Candidates")
         table.add_column("Candidate")
@@ -575,7 +589,7 @@ class ChatSession:
                 item.status,
                 str(item.shared_file),
             )
-        self.console.print(table)
+        self._say_renderable(table)
 
     def _import_local_skills(self) -> None:
         target = import_local_skills(self.project_root, self.config.runtime_root)
@@ -689,7 +703,7 @@ class ChatSession:
 
     def _print_queue(self) -> None:
         if not self.session.approval_queue:
-            self.console.print("No approval items queued.")
+            self._say("No approval items queued.")
             return
         table = create_table("Approval Queue")
         table.add_column("No.")
@@ -700,26 +714,26 @@ class ChatSession:
         for index, item in enumerate(self.session.approval_queue, start=1):
             marker = "*" if item.item_id == self.session.current_approval_id else ""
             table.add_row(str(index), f"{item.status}{marker}", item.role, item.path, item.reason)
-        self.console.print(table)
+        self._say_renderable(table)
 
     def _show_selected_approval(self) -> None:
         if not self.session.current_approval_id:
-            self.console.print("No approval item is currently selected.")
+            self._say("No approval item is currently selected.")
             return
         item = get_queue_item(self.session, self.session.current_approval_id)
         if item is None:
-            self.console.print("Selected approval item was not found.")
+            self._say("Selected approval item was not found.")
             return
         self._print_approval_item(item)
         self._prompt_review_choice(item)
 
     def _pick_approval(self, argument: str) -> None:
         if not argument.isdigit():
-            self.console.print("Use `/pick <number>` to open one approval item.")
+            self._say("Use `/pick <number>` to open one approval item.")
             return
         index = int(argument)
         if index < 1 or index > len(self.session.approval_queue):
-            self.console.print("Approval item number is out of range.")
+            self._say("Approval item number is out of range.")
             return
         item = self.session.approval_queue[index - 1]
         self.session = select_approval_item(
@@ -733,11 +747,11 @@ class ChatSession:
 
     def _update_selected_approval(self, status: str) -> None:
         if not self.session.current_approval_id:
-            self.console.print("No approval item is currently selected.")
+            self._say("No approval item is currently selected.")
             return
         item = get_queue_item(self.session, self.session.current_approval_id)
         if item is None:
-            self.console.print("Selected approval item was not found.")
+            self._say("Selected approval item was not found.")
             return
         self.session = update_approval_item(
             self.project_root,
@@ -748,10 +762,10 @@ class ChatSession:
         )
         if status == "approved":
             self._apply_approved_item(item)
-        self.console.print(f"{status}: {item.path}")
+        self._say(f"{status}: {item.path}")
 
     def _print_approval_item(self, item: ApprovalQueueItem) -> None:
-        self.console.print(
+        self._say(
             "\n".join(
                 [
                     f"approval_item={item.item_id}",
@@ -766,27 +780,27 @@ class ChatSession:
             )
         )
         if item.diff_path and Path(item.diff_path).exists():
-            self.console.print("--- diff ---")
+            self._say("--- diff ---")
             for raw_line in Path(item.diff_path).read_text(encoding="utf-8").splitlines():
                 if raw_line.startswith("+++ ") or raw_line.startswith("--- "):
-                    self.console.print(f"[bold]{raw_line}[/bold]")
+                    self._say(f"[bold]{raw_line}[/bold]")
                 elif raw_line.startswith("+") and not raw_line.startswith("+++"):
-                    self.console.print(f"[green]{raw_line}[/green]")
+                    self._say(f"[green]{raw_line}[/green]")
                 elif raw_line.startswith("-") and not raw_line.startswith("---"):
-                    self.console.print(f"[red]{raw_line}[/red]")
+                    self._say(f"[red]{raw_line}[/red]")
                 elif raw_line.startswith("@@"):
-                    self.console.print(f"[cyan]{raw_line}[/cyan]")
+                    self._say(f"[cyan]{raw_line}[/cyan]")
                 else:
-                    self.console.print(raw_line)
+                    self._say(raw_line)
         else:
-            self.console.print("No diff available for this item.")
+            self._say("No diff available for this item.")
 
     def _prompt_review_choice(self, item: ApprovalQueueItem) -> None:
-        self.console.print("Review choice: y=yes / n=no / d=defer / b=back")
+        self._say("Review choice: y=yes / n=no / d=defer / b=back")
         try:
             choice = input("review> ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            self.console.print("Review prompt cancelled.")
+            self._say("Review prompt cancelled.")
             return
         if choice in {"y", "yes"}:
             self._update_selected_approval("approved")
@@ -797,11 +811,11 @@ class ChatSession:
         if choice in {"d", "defer"}:
             self._update_selected_approval("deferred")
             return
-        self.console.print("Left approval item unchanged.")
+        self._say("Left approval item unchanged.")
 
     def _apply_approved_item(self, item: ApprovalQueueItem) -> None:
         if item.shared_file:
-            self.console.print("shared file routed to integration actor")
+            self._say("shared file routed to integration actor")
             self.session = update_approval_item(
                 self.project_root,
                 self.config.runtime_root,
@@ -825,8 +839,8 @@ class ChatSession:
             queue_item = get_queue_item(self.session, item.item_id)
             if queue_item is not None:
                 queue_item.merge_candidate_id = candidate.candidate_id
-            self.console.print(f"merge_candidate={candidate.candidate_id}")
-            self.console.print(f"merge_registry={target}")
+            self._say(f"merge_candidate={candidate.candidate_id}")
+            self._say(f"merge_registry={target}")
             return
 
         integration_root = self.project_root.parent / f"{self.project_root.name}-integrations"
@@ -864,14 +878,14 @@ class ChatSession:
         queue_item = get_queue_item(self.session, item.item_id)
         if queue_item is not None:
             queue_item.merge_candidate_id = candidate.candidate_id
-        self.console.print(f"applied_to={target_path}")
-        self.console.print(f"merge_candidate={candidate.candidate_id}")
-        self.console.print(f"merge_registry={target}")
+        self._say(f"applied_to={target_path}")
+        self._say(f"merge_candidate={candidate.candidate_id}")
+        self._say(f"merge_registry={target}")
 
     def _resume_session(self) -> None:
         sessions = list_sessions(self.project_root, self.config.runtime_root, limit=20)
         if not sessions:
-            self.console.print("No saved sessions found.")
+            self._say("No saved sessions found.")
             return
 
         table = create_table("Saved Sessions")
@@ -888,35 +902,72 @@ class ChatSession:
                 str(len(session.turns)),
                 session.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
             )
-        self.console.print(table)
-        self.console.print("Enter a session number to resume, or press Enter to cancel.")
+        self._say_renderable(table)
+        self._say("Enter a session number to resume, or press Enter to cancel.")
 
         try:
             choice = input("resume> ").strip()
         except (EOFError, KeyboardInterrupt):
-            self.console.print("Resume cancelled.")
+            self._say("Resume cancelled.")
             return
 
         if not choice:
-            self.console.print("Resume cancelled.")
+            self._say("Resume cancelled.")
             return
         if not choice.isdigit():
-            self.console.print("Resume cancelled. Enter a valid number next time.")
+            self._say("Resume cancelled. Enter a valid number next time.")
             return
 
         index = int(choice)
         if index < 1 or index > len(sessions):
-            self.console.print("Resume cancelled. Session number out of range.")
+            self._say("Resume cancelled. Session number out of range.")
             return
 
         self.session = sessions[index - 1]
         self.last_run_dir = self._derive_last_run_dir()
-        self.console.print(
+        self._say(
             f"Resumed session {self.session.session_id} with {len(self.session.turns)} saved turns."
         )
+        self._replay_transcript_if_needed()
 
     def _derive_last_run_dir(self) -> Path | None:
         if not self.session.turns:
             return None
         run_dir = self.session.turns[-1].run_dir.strip()
         return Path(run_dir) if run_dir else None
+
+    def _say(self, message: str, *, record: bool = True) -> None:
+        self.console.print(message)
+        if record:
+            self.session = append_transcript_entry(
+                self.project_root,
+                self.config.runtime_root,
+                self.session,
+                speaker="assistant",
+                content=self._render_plain_text(message),
+            )
+
+    def _say_renderable(self, renderable, *, record: bool = True) -> None:
+        self.console.print(renderable)
+        if record:
+            self.session = append_transcript_entry(
+                self.project_root,
+                self.config.runtime_root,
+                self.session,
+                speaker="assistant",
+                content=self._render_plain_text(renderable),
+            )
+
+    def _render_plain_text(self, renderable) -> str:
+        capture = StringIO()
+        plain_console = Console(file=capture, force_terminal=False, color_system=None, width=120)
+        plain_console.print(renderable)
+        return capture.getvalue().strip()
+
+    def _replay_transcript_if_needed(self) -> None:
+        lines = replay_lines(self.session)
+        if not lines:
+            return
+        self.console.print("[bold cyan]Replaying saved session transcript...[/bold cyan]")
+        for line in lines:
+            self.console.print(line)

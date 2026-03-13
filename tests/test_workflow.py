@@ -285,6 +285,7 @@ def test_chat_resume_command_restores_session(tmp_path: Path) -> None:
     assert second.exit_code == 0
     assert "Saved Sessions" in second.stdout
     assert "Resumed session" in second.stdout
+    assert "user> Build a task tracker" in second.stdout
     assert "last_run=" in second.stdout
 
 

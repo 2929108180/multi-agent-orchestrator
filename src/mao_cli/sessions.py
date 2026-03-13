@@ -32,6 +32,12 @@ class SessionTurn(BaseModel):
     defects: list[str] = Field(default_factory=list)
 
 
+class ChatTranscriptEntry(BaseModel):
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    speaker: str
+    content: str
+
+
 class ChatSessionState(BaseModel):
     session_id: str = Field(default_factory=lambda: uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -40,6 +46,7 @@ class ChatSessionState(BaseModel):
     mode: SessionMode
     with_worktrees: bool = False
     turns: list[SessionTurn] = Field(default_factory=list)
+    transcript: list[ChatTranscriptEntry] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
     approval_queue: list["ApprovalQueueItem"] = Field(default_factory=list)
     current_approval_id: str = ""
@@ -140,6 +147,24 @@ def append_turn(
     return session
 
 
+def append_transcript_entry(
+    project_root: Path,
+    runtime_root: str,
+    session: ChatSessionState,
+    *,
+    speaker: str,
+    content: str,
+) -> ChatSessionState:
+    session.transcript.append(
+        ChatTranscriptEntry(
+            speaker=speaker,
+            content=sanitize_text(content),
+        )
+    )
+    save_session(project_root, runtime_root, session)
+    return session
+
+
 def append_approval_items(
     project_root: Path,
     runtime_root: str,
@@ -207,6 +232,7 @@ def _next_approval_item(session: ChatSessionState) -> ApprovalQueueItem | None:
 
 def clear_turns(project_root: Path, runtime_root: str, session: ChatSessionState) -> ChatSessionState:
     session.turns = []
+    session.transcript = []
     save_session(project_root, runtime_root, session)
     return session
 
@@ -271,3 +297,17 @@ def build_review_memory(session: ChatSessionState, limit: int = 3) -> str:
         if turn.defects:
             lines.append(f"  Previous defects: {bounded_text('; '.join(turn.defects), limit=220)}")
     return "\n".join(lines)
+
+
+def replay_lines(session: ChatSessionState, limit: int = 200) -> list[str]:
+    if session.transcript:
+        return [f"{entry.speaker}> {entry.content}" for entry in session.transcript[-limit:]]
+
+    lines: list[str] = []
+    for turn in session.turns[-limit:]:
+        lines.append(f"user> {turn.user_input}")
+        if turn.summary:
+            lines.append(f"assistant> summary={turn.summary}")
+        if turn.run_dir:
+            lines.append(f"assistant> run_dir={turn.run_dir}")
+    return lines

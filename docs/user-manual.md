@@ -151,12 +151,11 @@ Resuming a session restores:
 - conversation context
 - approval queue state
 - latest known run path
+- saved transcript replay in the current terminal
 
-What does **not** happen automatically right now:
+After resuming, MAO replays the saved transcript it knows about.
 
-- old chat lines are not replayed back into the current terminal buffer
-
-Instead, after resuming, you should use:
+You can still use:
 
 - `/history`
 - `/context`
