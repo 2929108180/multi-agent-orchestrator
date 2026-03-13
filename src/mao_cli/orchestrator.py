@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import difflib
 from fnmatch import fnmatch
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable
 
@@ -329,9 +329,11 @@ def execute_workflow(
     task_memories: dict[str, str] | None = None,
     review_memory: str = "",
     capability_contexts: dict[str, str] | None = None,
+    enabled_roles: set[str] | None = None,
 ) -> Path:
     requirement = validate_requirement(requirement)
     gateway = ModelGateway(config=config, force_mock=force_mock)
+    active_roles = enabled_roles or set(config.providers.keys())
     plan = build_architect_plan(requirement)
     run = WorkflowRun(requirement=requirement, plan=plan)
     _emit_event(event_handler, "workflow_started", run_id=run.run_id, message="workflow started")
@@ -378,9 +380,22 @@ def execute_workflow(
     architect_sections.append("Summarize the delivery slice and critical interface assumptions.")
     architect_prompt = _render_prompt_sections(architect_sections)
     _emit_event(event_handler, "architect_started", role="architect", run_id=run.run_id, message="planning")
+    _emit_event(
+        event_handler,
+        "architect_dispatched",
+        role="architect",
+        run_id=run.run_id,
+        message=f"task={_summarize_text('Summarize the delivery slice and critical interface assumptions.')}",
+    )
     architect_exchange = _call("architect", architect_prompt)
     run.exchanges.append(architect_exchange)
-    _emit_event(event_handler, "architect_completed", role="architect", run_id=run.run_id, message="plan ready")
+    _emit_event(
+        event_handler,
+        "architect_completed",
+        role="architect",
+        run_id=run.run_id,
+        message=_summarize_text(architect_exchange.response),
+    )
 
     frontend_prompt = _render_worker_prompt(plan, plan.frontend_task)
     backend_prompt = _render_worker_prompt(plan, plan.backend_task)
@@ -412,17 +427,55 @@ def execute_workflow(
         if backend_capability_context:
             context_sections.extend(["Capability context:", backend_capability_context])
         backend_prompt = backend_prompt + "\n\n" + _render_prompt_sections(context_sections)
-    _emit_event(event_handler, "frontend_started", role="frontend", run_id=run.run_id, message="running")
-    _emit_event(event_handler, "backend_started", role="backend", run_id=run.run_id, message="running")
+    frontend_exchange = AgentExchange(role="frontend", model=config.providers["frontend"].model, prompt="", response="", round_index=0)
+    backend_exchange = AgentExchange(role="backend", model=config.providers["backend"].model, prompt="", response="", round_index=0)
+    futures: dict = {}
     with ThreadPoolExecutor(max_workers=2) as executor:
-        frontend_future = executor.submit(_call, "frontend", frontend_prompt, 0)
-        backend_future = executor.submit(_call, "backend", backend_prompt, 0)
-        frontend_exchange = frontend_future.result()
-        backend_exchange = backend_future.result()
+        if "frontend" in active_roles:
+            _emit_event(
+                event_handler,
+                "frontend_started",
+                role="frontend",
+                run_id=run.run_id,
+                message=f"calling frontend... objective={_summarize_text(plan.frontend_task.objective)}",
+                model=config.providers["frontend"].model,
+            )
+            futures[executor.submit(_call, "frontend", frontend_prompt, 0)] = "frontend"
+        if "backend" in active_roles:
+            _emit_event(
+                event_handler,
+                "backend_started",
+                role="backend",
+                run_id=run.run_id,
+                message=f"calling backend... objective={_summarize_text(plan.backend_task.objective)}",
+                model=config.providers["backend"].model,
+            )
+            futures[executor.submit(_call, "backend", backend_prompt, 0)] = "backend"
+        for future in as_completed(futures):
+            role = futures[future]
+            exchange = future.result()
+            if role == "frontend":
+                frontend_exchange = exchange
+                _emit_event(
+                    event_handler,
+                    "frontend_completed",
+                    role="frontend",
+                    run_id=run.run_id,
+                    message=_summarize_text(frontend_exchange.response),
+                    model=frontend_exchange.model,
+                )
+            else:
+                backend_exchange = exchange
+                _emit_event(
+                    event_handler,
+                    "backend_completed",
+                    role="backend",
+                    run_id=run.run_id,
+                    message=_summarize_text(backend_exchange.response),
+                    model=backend_exchange.model,
+                )
 
     run.exchanges.extend([frontend_exchange, backend_exchange])
-    _emit_event(event_handler, "frontend_completed", role="frontend", run_id=run.run_id, message="completed")
-    _emit_event(event_handler, "backend_completed", role="backend", run_id=run.run_id, message="completed")
     _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
 
     review_prompt = _render_review_prompt(
@@ -435,10 +488,21 @@ def execute_workflow(
         review_memory=review_memory,
         capability_context=reviewer_capability_context,
     )
-    _emit_event(event_handler, "review_started", role="reviewer", run_id=run.run_id, message="checking")
-    review_exchange = _call("reviewer", review_prompt, 0)
-    run.exchanges.append(review_exchange)
-    verdict = parse_review_verdict(review_exchange.response)
+    if "reviewer" in active_roles:
+        _emit_event(
+            event_handler,
+            "review_started",
+            role="reviewer",
+            run_id=run.run_id,
+            message=f"calling reviewer... focus={_summarize_text(', '.join(plan.review_focus))}",
+            model=config.providers["reviewer"].model,
+        )
+        review_exchange = _call("reviewer", review_prompt, 0)
+        run.exchanges.append(review_exchange)
+        verdict = parse_review_verdict(review_exchange.response)
+    else:
+        review_exchange = AgentExchange(role="reviewer", model=config.providers["reviewer"].model, prompt="", response="Reviewer disabled.", round_index=0)
+        verdict = ReviewVerdict(approved=True, summary="Reviewer disabled.", findings=[], defects=[])
     ownership_defects, integration_notes = _evaluate_ownership(
         config=config,
         frontend_task=plan.frontend_task,
@@ -461,6 +525,7 @@ def execute_workflow(
         role="reviewer",
         run_id=run.run_id,
         message="approved" if verdict.approved else "defects found",
+        model=config.providers["reviewer"].model,
     )
 
     repair_round = 0
@@ -552,7 +617,7 @@ def execute_workflow(
             role="reviewer",
             run_id=run.run_id,
             round_index=repair_round,
-            message="checking",
+            message="calling reviewer...",
         )
         review_exchange = _call("reviewer", review_prompt, repair_round)
         run.exchanges.append(review_exchange)
@@ -583,6 +648,13 @@ def execute_workflow(
         )
 
     run_dir = persist_run(run, output_dir, repository_root)
+    recap = (
+        f"architect={_summarize_text(architect_exchange.response)} | "
+        f"frontend={_summarize_text(current_frontend_exchange.response)} | "
+        f"backend={_summarize_text(current_backend_exchange.response)} | "
+        f"reviewer={_summarize_text(verdict.summary)}"
+    )
+    _emit_event(event_handler, "workflow_recap", run_id=run.run_id, message=recap)
     _emit_event(event_handler, "workflow_completed", run_id=run.run_id, message="workflow completed")
     return run_dir
 
@@ -713,6 +785,13 @@ def _render_prompt_sections(parts: list[str]) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def _summarize_text(text: str, limit: int = 120) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: limit - 3].rstrip() + "..."
+
+
 def _extract_proposed_paths(response: str) -> list[str]:
     paths: list[str] = []
     capture = False
@@ -795,7 +874,6 @@ def _build_integration_decisions(
     ownership_defects: list[ReviewDefect],
 ) -> list[IntegrationDecision]:
     decisions: list[IntegrationDecision] = []
-    defect_lookup = {defect.summary: defect for defect in ownership_defects}
     shared_paths = {
         defect.summary.split("`")[1]
         for defect in ownership_defects
@@ -847,28 +925,28 @@ def _build_integration_decisions(
                 decisions.append(
                     IntegrationDecision(
                         item_id=f"{exchange.role}:{normalized}",
-                    role=exchange.role,
-                    path=normalized,
-                    status="rejected",
+                        role=exchange.role,
+                        path=normalized,
+                        status="rejected",
                         reason="path violates worker ownership rules",
-                    policy_source="ownership",
-                    model=exchange.model,
-                    shared_file=False,
+                        policy_source="ownership",
+                        model=exchange.model,
+                        shared_file=False,
+                    )
                 )
-            )
-            continue
-        decisions.append(
-            IntegrationDecision(
+                continue
+            decisions.append(
+                IntegrationDecision(
                     item_id=f"{exchange.role}:{normalized}",
                     role=exchange.role,
                     path=normalized,
                     status=_status_from_mode(base_mode),
-                reason="clean worker-owned path",
-                policy_source=policy_source,
-                model=exchange.model,
-                shared_file=False,
+                    reason="clean worker-owned path",
+                    policy_source=policy_source,
+                    model=exchange.model,
+                    shared_file=False,
+                )
             )
-        )
     return decisions
 
 
@@ -909,6 +987,8 @@ def _emit_event(
     round_index: int = 0,
     message: str = "",
     run_id: str = "",
+    model: str = "",
+    metadata: dict[str, str] | None = None,
 ) -> None:
     if event_handler is None:
         return
@@ -919,6 +999,8 @@ def _emit_event(
             round_index=round_index,
             message=message,
             run_id=run_id,
+            model=model,
+            metadata=metadata or {},
         )
     )
 

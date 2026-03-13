@@ -14,6 +14,7 @@ English and Chinese documentation index for MAO.
 - [user-manual.md](./user-manual.md)
 - [test-manual.md](./test-manual.md)
 - [v1-target.md](./v1-target.md)
+- [modules/README.md](./modules/README.md)
 
 ## 简体中文
 
@@ -27,3 +28,4 @@ English and Chinese documentation index for MAO.
 - [user-manual.zh-CN.md](./user-manual.zh-CN.md)
 - [test-manual.zh-CN.md](./test-manual.zh-CN.md)
 - [v1-target.zh-CN.md](./v1-target.zh-CN.md)
+- [modules/README.md](./modules/README.md)

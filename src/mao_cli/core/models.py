@@ -69,6 +69,8 @@ class WorkflowEvent(BaseModel):
     round_index: int = 0
     message: str = ""
     run_id: str = ""
+    model: str = ""
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class IntegrationDecision(BaseModel):

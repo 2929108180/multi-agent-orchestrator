@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
 REQUIRED_PROVIDER_ROLES = ("architect", "frontend", "backend", "reviewer")
 ApprovalMode = Literal["auto", "manual", "reject"]
+APIStyle = Literal["chat_completions", "responses", "messages", "generate_content"]
 DEFAULT_API_KEY_ENVS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -18,11 +20,14 @@ DEFAULT_API_KEY_ENVS = {
 
 class ProviderConfig(BaseModel):
     adapter: str = Field(default="mock")
+    profile: str = ""
     model: str
     api_key_env: str | None = None
     base_url: str | None = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    api_style: APIStyle = "chat_completions"
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def uses_live_provider(self) -> bool:

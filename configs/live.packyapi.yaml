@@ -1,0 +1,77 @@
+# PackyAPI live configuration / PackyAPI 真实联调配置
+# Fill your real keys through environment variables before starting live mode.
+# 使用 live 模式前，请先通过环境变量填入真实密钥。
+#
+# Notes / 说明
+# - GPT uses OpenAI Responses API through https://api-slb.packyapi.com/v1
+# - Claude uses the Anthropic-style endpoint through https://api-slb.packyapi.com
+# - Gemini uses the Google-style models endpoint through https://api-slb.packyapi.com
+# - If Packy control panel or CC-Switch shows a different exact model ID, replace only the `model` field.
+# - GPT 使用 OpenAI Responses API 入口 https://www.packyapi.com/v1
+# - Claude 使用 Anthropic 风格端点 https://www.packyapi.com
+# - Gemini 使用 Google 风格 models 端点 https://www.packyapi.com
+# - 如果 Packy 控制台或 CC-Switch 显示的精确模型 ID 不同，只需要替换 `model` 字段
+
+version: 1
+project_name: multi-agent-orchestrator
+runtime_root: runtime
+artifacts_root: artifacts
+
+workflow:
+  max_repair_rounds: 2
+
+approval:
+  default_mode: manual
+  shared_path_mode: manual
+  conflict_mode: reject
+  role_overrides:
+    reviewer:
+      mode: reject
+
+providers:
+  architect:
+    adapter: openai
+    profile: packy_openai_responses
+    model: gpt-5.4
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api-slb.packyapi.com/v1
+    api_style: responses
+    extra_headers:
+      version: "0.58.0"
+      conversation_id: "__UUID__"
+      session_id: "__UUID__"
+      accept: "application/json"
+      user-agent: "mao/0.1"
+    extra_body:
+      include:
+        - "reasoning.encrypted_content"
+      tool_choice: "auto"
+      text:
+        verbosity: "low"
+      reasoning:
+        effort: "high"
+        summary: "auto"
+      store: false
+      parallel_tool_calls: false
+
+  frontend:
+    adapter: gemini
+    profile: packy_gemini_generate_content
+    model: gemini-3-pro-preview
+    api_key_env: GEMINI_API_KEY
+    base_url: https://api-slb.packyapi.com
+    api_style: generate_content
+
+  backend:
+    adapter: anthropic
+    model: claude-sonnet-4-6
+    api_key_env: ANTHROPIC_AUTH_TOKEN
+    base_url: https://api-slb.packyapi.com
+    api_style: messages
+
+  reviewer:
+    adapter: anthropic
+    model: claude-sonnet-4-6
+    api_key_env: ANTHROPIC_AUTH_TOKEN
+    base_url: https://api-slb.packyapi.com
+    api_style: messages

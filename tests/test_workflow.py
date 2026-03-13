@@ -151,8 +151,8 @@ def test_chat_runs_workflow(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Running workflow..." in result.stdout
-    assert "architect: planning" in result.stdout
-    assert "reviewer: approved" in result.stdout
+    assert "architect planning" in result.stdout
+    assert "reviewer approved" in result.stdout
     assert "Run artifacts saved to:" in result.stdout
 
 
@@ -303,6 +303,47 @@ def test_chat_approval_queue_commands() -> None:
     assert "approval_item=" in result.stdout
     assert "deferred:" in result.stdout
     assert "applied_to=" in result.stdout
+
+
+def test_chat_auto_team_mode_routes_simple_prompt_to_primary_model() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--mock"],
+        input="你好\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "calling architect..." in result.stdout
+    assert "architect summary:" in result.stdout
+    assert "frontend:" not in result.stdout
+
+
+def test_chat_team_on_forces_team_workflow() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--mock"],
+        input="/team on\n你好\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "team_mode set to on" in result.stdout
+    assert "frontend calling frontend..." in result.stdout
+
+
+def test_chat_member_toggle_disables_backend() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--mock"],
+        input="/member off backend\nBuild a task tracker\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "member backend set to False" in result.stdout
+    assert "frontend calling frontend..." in result.stdout
+    assert "backend calling backend..." not in result.stdout
 
 
 def test_chat_live_preflight_fails_cleanly(tmp_path: Path) -> None:

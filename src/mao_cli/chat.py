@@ -14,7 +14,7 @@ from mao_cli.core.models import WorkflowEvent
 from mao_cli.gitops import WorkerWorkspace, apply_proposal_to_workspace, ensure_named_worktree
 from mao_cli.mergeflow import MergeCandidate, append_merge_candidate, list_merge_candidates
 from mao_cli.orchestrator import execute_workflow
-from mao_cli.providers import inspect_providers
+from mao_cli.providers import ModelGateway, inspect_providers
 from mao_cli.registry import (
     assign_mcp_access,
     assign_skill_access,
@@ -70,6 +70,9 @@ CHAT_COMMANDS = {
     "/status": "Show the current chat session settings.",
     "/doctor": "Show provider readiness for this chat session.",
     "/mode": "Show whether the session is using mock or live providers.",
+    "/team": "Show or set team mode: auto / on / off.",
+    "/members": "Show current team member enablement.",
+    "/member": "Enable or disable a team member: on/off <role>.",
     "/history": "Show the saved turns for this session.",
     "/context": "Show the conversation context sent into new runs.",
     "/clear": "Clear the saved turns in the current session.",
@@ -145,6 +148,12 @@ class ChatSession:
         self.session = self._load_or_create_session(session_id=session_id, resume_latest=resume_latest)
         self.last_run_dir = self._derive_last_run_dir()
         self.current_integration_workspace: WorkerWorkspace | None = None
+        self.team_mode = "auto"
+        self.member_states = {
+            "frontend": True,
+            "backend": True,
+            "reviewer": True,
+        }
         self._preflight_live_mode()
 
     def print_welcome(self) -> None:
@@ -154,7 +163,8 @@ class ChatSession:
         self._say(
             f"[white]session={self.session.session_id}[/white] "
             f"[green]mode={'mock' if self.mock else 'live'}[/green] "
-            f"[magenta]skills={len(self.skills)}[/magenta]",
+            f"[magenta]skills={len(self.skills)}[/magenta] "
+            f"[cyan]team={self.team_mode}[/cyan]",
             record=False,
         )
         if self._interactive_completion_available():
@@ -166,7 +176,7 @@ class ChatSession:
             )
         self._say(
             "[magenta]Built-in commands:[/magenta] "
-            "/help /status /doctor /mode /history /context /skills /mcp /merge "
+            "/help /status /doctor /mode /team /members /member /history /context /skills /mcp /merge "
             "/skill-import-local /mcp-import-local /grant-skill /grant-mcp "
             "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /exit",
             record=False,
@@ -186,6 +196,10 @@ class ChatSession:
                 return
 
             line = raw.lstrip("\ufeff").strip()
+            if line.startswith("锘?"):
+                line = line[2:].strip()
+            if line.startswith("锘?/"):
+                line = line.replace("锘?", "", 1).strip()
             if not line:
                 continue
             self.session = append_transcript_entry(
@@ -200,7 +214,7 @@ class ChatSession:
                     return
                 continue
 
-            self._run_requirement(line)
+            self._handle_user_request(line)
 
     def _prompt(self) -> str:
         if not self._interactive_completion_available():
@@ -248,6 +262,8 @@ class ChatSession:
                         f"session_id={self.session.session_id}",
                         f"config={self.config_path}",
                         f"mock={self.mock}",
+                        f"team_mode={self.team_mode}",
+                        f"members={self._member_state_summary()}",
                         f"with_worktrees={self.with_worktrees}",
                         f"output_dir={self.output_dir}",
                         f"last_run={self.last_run_dir or '-'}",
@@ -258,6 +274,15 @@ class ChatSession:
             return False
         if command == "/mode":
             self._say(f"mode={'mock' if self.mock else 'live'}")
+            return False
+        if command == "/team":
+            self._handle_team_command(argument)
+            return False
+        if command == "/members":
+            self._print_members()
+            return False
+        if command == "/member":
+            self._handle_member_command(argument)
             return False
         if command == "/doctor":
             rows = inspect_providers(self.config, force_mock=self.mock)
@@ -336,6 +361,12 @@ class ChatSession:
         self._say(f"Unknown command: {line}. Use /help.")
         return False
 
+    def _handle_user_request(self, requirement: str) -> None:
+        if self._should_use_team_mode(requirement):
+            self._run_requirement(requirement)
+            return
+        self._run_single_model(requirement)
+
     def _run_requirement(self, requirement: str) -> None:
         try:
             requirement = validate_requirement(requirement)
@@ -367,6 +398,7 @@ class ChatSession:
             task_memories=task_memories,
             review_memory=review_memory,
             capability_contexts=capability_contexts,
+            enabled_roles={role for role, enabled in self.member_states.items() if enabled}.union({"architect"}),
         )
         self.last_run_dir = run_dir
 
@@ -395,6 +427,107 @@ class ChatSession:
         if pending:
             self._say(f"approval_queue={len(pending)} pending items. Use /queue or /review.")
 
+    def _run_single_model(self, requirement: str) -> None:
+        try:
+            requirement = validate_requirement(requirement)
+        except ValueError as exc:
+            self._say(f"Invalid requirement: {exc}")
+            return
+
+        self._say("calling architect...")
+        gateway = ModelGateway(config=self.config, force_mock=self.mock)
+        response = gateway.complete(
+            role="architect",
+            prompt="\n".join(
+                [
+                    "You are the primary assistant.",
+                    "Answer the user directly and concisely.",
+                    f"User input: {requirement}",
+                ]
+            ),
+        )
+        self._say(f"architect summary: {self._summarize_text(response)}")
+        self.session = append_turn(
+            self.project_root,
+            self.config.runtime_root,
+            self.session,
+            user_input=requirement,
+            run_id="",
+            run_dir=Path(),
+            approved=None,
+            summary=response,
+            defects=[],
+        )
+
+    def _should_use_team_mode(self, requirement: str) -> bool:
+        if self.team_mode == "on":
+            return True
+        if self.team_mode == "off":
+            return False
+        if self.mock:
+            return self._heuristic_should_use_team_mode(requirement)
+        return self._supervisor_should_use_team_mode(requirement)
+
+    def _heuristic_should_use_team_mode(self, requirement: str) -> bool:
+        lowered = requirement.lower()
+        casual_inputs = {
+            "hi",
+            "hello",
+            "你好",
+            "嗨",
+            "哈喽",
+            "在吗",
+            "早上好",
+            "晚上好",
+        }
+        if lowered.strip() in casual_inputs:
+            return False
+        teamwork_signals = [
+            "build",
+            "create",
+            "make",
+            "implement",
+            "project",
+            "app",
+            "task",
+            "tracker",
+            "frontend",
+            "backend",
+            "react",
+            "vite",
+            "fastapi",
+            "api",
+            "reviewer",
+            "审查",
+            "前端",
+            "后端",
+            "接口",
+            "系统",
+            "项目",
+            "登录",
+            "权限",
+        ]
+        if "\n" in requirement or len(requirement) > 20:
+            return True
+        return any(token in lowered for token in teamwork_signals)
+
+    def _supervisor_should_use_team_mode(self, requirement: str) -> bool:
+        gateway = ModelGateway(config=self.config, force_mock=self.mock)
+        response = gateway.complete(
+            role="architect",
+            prompt="\n".join(
+                [
+                    "You are the supervisor routing assistant.",
+                    "Decide whether this input requires the whole team workflow or a direct single-model reply.",
+                    "Return exactly one line:",
+                    "TEAM_MODE: on or TEAM_MODE: off",
+                    f"User input: {requirement}",
+                ]
+            ),
+        )
+        first_line = response.splitlines()[0].strip().lower()
+        return "team_mode: on" in first_line
+
     def _interactive_completion_available(self) -> bool:
         return PromptSession is not None and sys.stdin.isatty() and sys.stdout.isatty()
 
@@ -413,32 +546,38 @@ class ChatSession:
 
     def _format_event(self, event: WorkflowEvent) -> str:
         role = event.role or "workflow"
+        model = event.model or ""
+        prefix = self._event_prefix(role=role, model=model)
         if event.event_type == "workflow_started":
             return "workflow: started"
         if event.event_type == "architect_started":
-            return "architect: planning"
+            return f"{prefix} planning"
+        if event.event_type == "architect_dispatched":
+            return f"{prefix} dispatch -> {event.message}"
         if event.event_type == "architect_completed":
-            return "architect: completed"
+            return f"{prefix} {event.message}"
         if event.event_type == "frontend_started":
-            return "frontend: running"
+            return f"{prefix} {event.message}"
         if event.event_type == "backend_started":
-            return "backend: running"
+            return f"{prefix} {event.message}"
         if event.event_type == "frontend_completed":
-            return "frontend: completed"
+            return f"{prefix} {event.message}"
         if event.event_type == "backend_completed":
-            return "backend: completed"
+            return f"{prefix} {event.message}"
         if event.event_type == "review_started":
-            return "reviewer: checking"
+            return f"{prefix} {event.message}"
         if event.event_type == "review_completed":
-            return f"reviewer: {event.message}"
+            return f"{prefix} {event.message}"
         if event.event_type == "repair_round_started":
             return f"repair round {event.round_index}"
         if event.event_type == "repair_target_started":
-            return f"{role}: repairing"
+            return f"{prefix} repairing"
         if event.event_type == "repair_target_completed":
-            return f"{role}: repaired"
+            return f"{prefix} repaired"
         if event.event_type == "workflow_completed":
             return "workflow: completed"
+        if event.event_type == "workflow_recap":
+            return f"final recap: {event.message}"
         return ""
 
     def _resolve_command(self, command: str) -> str:
@@ -455,6 +594,58 @@ class ChatSession:
         parts = line.split(" ", 1)
         argument = parts[1].strip() if len(parts) > 1 else ""
         return base, argument
+
+    def _handle_team_command(self, argument: str) -> None:
+        value = argument.strip().lower()
+        if not value:
+            self._say(f"team_mode={self.team_mode}")
+            return
+        if value not in {"auto", "on", "off"}:
+            self._say("Use `/team auto`, `/team on`, or `/team off`.")
+            return
+        self.team_mode = value
+        self._say(f"team_mode set to {self.team_mode}")
+
+    def _print_members(self) -> None:
+        table = create_table("Team Members")
+        table.add_column("Role")
+        table.add_column("Enabled")
+        table.add_column("Model")
+        for role in ("frontend", "backend", "reviewer"):
+            table.add_row(role, str(self.member_states[role]), self.config.providers[role].model)
+        self._say_renderable(table)
+
+    def _handle_member_command(self, argument: str) -> None:
+        parts = argument.split()
+        if len(parts) != 2 or parts[0] not in {"on", "off"}:
+            self._say("Use `/member on <role>` or `/member off <role>`.")
+            return
+        _, role = parts
+        if role not in self.member_states:
+            self._say("Allowed roles: frontend, backend, reviewer.")
+            return
+        self.member_states[role] = parts[0] == "on"
+        self._say(f"member {role} set to {self.member_states[role]}")
+
+    def _summarize_text(self, text: str, limit: int = 120) -> str:
+        compact = " ".join(text.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3].rstrip() + "..."
+
+    def _member_state_summary(self) -> str:
+        return ", ".join(f"{role}={'on' if enabled else 'off'}" for role, enabled in self.member_states.items())
+
+    def _event_prefix(self, *, role: str, model: str) -> str:
+        styles = {
+            "architect": "bold cyan",
+            "frontend": "bold magenta",
+            "backend": "bold green",
+            "reviewer": "bold yellow",
+        }
+        style = styles.get(role, "bold white")
+        label = f"{role}[{model}]" if model else role
+        return f"[{style}]{label}[/]"
 
     def _build_banner(self) -> Panel:
         banner = Text()
@@ -595,16 +786,16 @@ class ChatSession:
         target = import_local_skills(self.project_root, self.config.runtime_root)
         self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
         self.team_context = self._build_team_context()
-        self.console.print(f"skills imported -> {target}")
+        self._say(f"skills imported -> {target}")
 
     def _import_local_mcp(self) -> None:
         target = import_local_mcp(self.project_root, self.config.runtime_root)
-        self.console.print(f"mcp imported -> {target}")
+        self._say(f"mcp imported -> {target}")
 
     def _grant_skill(self, argument: str) -> None:
         parts = argument.split()
         if len(parts) != 3 or parts[0] not in {"role", "model"}:
-            self.console.print("Use `/grant-skill role <role> <skill>` or `/grant-skill model <model> <skill>`.")
+            self._say("Use `/grant-skill role <role> <skill>` or `/grant-skill model <model> <skill>`.")
             return
         kind, target, skill_name = parts
         path = assign_skill_access(
@@ -616,12 +807,12 @@ class ChatSession:
         )
         self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
         self.team_context = self._build_team_context()
-        self.console.print(f"skill grant updated -> {path}")
+        self._say(f"skill grant updated -> {path}")
 
     def _grant_mcp(self, argument: str) -> None:
         parts = argument.split()
         if len(parts) != 3 or parts[0] not in {"role", "model"}:
-            self.console.print("Use `/grant-mcp role <role> <server>` or `/grant-mcp model <model> <server>`.")
+            self._say("Use `/grant-mcp role <role> <server>` or `/grant-mcp model <model> <server>`.")
             return
         kind, target, server_name = parts
         path = assign_mcp_access(
@@ -631,12 +822,12 @@ class ChatSession:
             role=target if kind == "role" else None,
             model=target if kind == "model" else None,
         )
-        self.console.print(f"mcp grant updated -> {path}")
+        self._say(f"mcp grant updated -> {path}")
 
     def _register_skill(self, argument: str) -> None:
         parts = argument.split(" ", 2)
         if len(parts) != 3:
-            self.console.print("Use `/register-skill <name> <path> <description>`.")
+            self._say("Use `/register-skill <name> <path> <description>`.")
             return
         name, path, description = parts
         target = register_skill(
@@ -648,12 +839,12 @@ class ChatSession:
         )
         self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
         self.team_context = self._build_team_context()
-        self.console.print(f"skill registered -> {target}")
+        self._say(f"skill registered -> {target}")
 
     def _register_mcp(self, argument: str) -> None:
         parts = argument.split()
         if len(parts) < 3:
-            self.console.print("Use `/register-mcp <name> <transport> <command|url> [args...]`.")
+            self._say("Use `/register-mcp <name> <transport> <command|url> [args...]`.")
             return
         name, transport, endpoint, *rest = parts
         kwargs = {"name": name, "transport": transport}
@@ -667,7 +858,7 @@ class ChatSession:
             self.config.runtime_root,
             **kwargs,
         )
-        self.console.print(f"mcp registered -> {target}")
+        self._say(f"mcp registered -> {target}")
 
     def _append_run_approval_items(self, run_dir: Path) -> None:
         integration_path = run_dir / "integration.json"
@@ -971,3 +1162,20 @@ class ChatSession:
         self.console.print("[bold cyan]Replaying saved session transcript...[/bold cyan]")
         for line in lines:
             self.console.print(line)
+
+    def _handle_team_command(self, argument: str) -> None:
+        value = argument.strip().lower()
+        if not value:
+            self._say(f"team_mode={self.team_mode}")
+            return
+        if value not in {"auto", "on", "off"}:
+            self._say("Use `/team auto`, `/team on`, or `/team off`.")
+            return
+        self.team_mode = value
+        self._say(f"team_mode set to {self.team_mode}")
+
+    def _summarize_text(self, text: str, limit: int = 120) -> str:
+        compact = " ".join(text.split())
+        if len(compact) <= limit:
+            return compact
+        return compact[: limit - 3].rstrip() + "..."
