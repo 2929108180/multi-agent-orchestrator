@@ -14,16 +14,21 @@ from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import validate_requirement
 from mao_cli.sessions import (
+    ApprovalQueueItem,
     ChatSessionState,
+    append_approval_items,
     append_turn,
     build_conversation_context,
     build_review_memory,
     build_task_memory,
     clear_turns,
     create_session,
+    get_queue_item,
     load_latest_session,
     load_session,
     list_sessions,
+    select_approval_item,
+    update_approval_item,
 )
 from mao_cli.skills import build_team_context, discover_skills
 from mao_cli.terminal import create_table
@@ -54,6 +59,12 @@ CHAT_COMMANDS = {
     "/clear": "Clear the saved turns in the current session.",
     "/skills": "List available local skills for team mode.",
     "/resume": "Choose and resume a saved session from this chat window.",
+    "/queue": "List queued approval items.",
+    "/review": "Show the currently selected approval item.",
+    "/pick": "Open a specific approval item by queue number.",
+    "/approve": "Approve the currently selected queued change.",
+    "/reject": "Reject the currently selected queued change.",
+    "/defer": "Pause the current approval item and come back later.",
     "/last": "Show the latest run directory from this session.",
     "/exit": "Exit the chat session.",
     "/quit": "Exit the chat session.",
@@ -128,7 +139,7 @@ class ChatSession:
                 "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]"
             )
         self.console.print(
-            "[magenta]Built-in commands:[/magenta] /help /status /doctor /mode /history /context /skills /resume /last /exit"
+            "[magenta]Built-in commands:[/magenta] /help /status /doctor /mode /history /context /skills /resume /queue /review /approve /reject /defer /last /exit"
         )
 
     def run(self) -> None:
@@ -179,7 +190,7 @@ class ChatSession:
         return "Enter a requirement, or type `/` and press Tab for commands."
 
     def _handle_command(self, line: str) -> bool:
-        command = self._resolve_command(line.lower())
+        command, argument = self._parse_command(line.lower())
         if command in {"/exit", "/quit"}:
             self.console.print("Chat closed.")
             return True
@@ -234,6 +245,24 @@ class ChatSession:
             return False
         if command == "/resume":
             self._resume_session()
+            return False
+        if command == "/queue":
+            self._print_queue()
+            return False
+        if command == "/review":
+            self._show_selected_approval()
+            return False
+        if command == "/pick":
+            self._pick_approval(argument)
+            return False
+        if command == "/approve":
+            self._update_selected_approval("approved")
+            return False
+        if command == "/reject":
+            self._update_selected_approval("rejected")
+            return False
+        if command == "/defer":
+            self._update_selected_approval("deferred")
             return False
         if command == "/last":
             if self.last_run_dir is None:
@@ -290,10 +319,14 @@ class ChatSession:
             summary=summary,
             defects=defects,
         )
+        self._append_run_approval_items(run_dir)
 
         self.console.print(f"Run artifacts saved to: {run_dir}")
         self.console.print(f"approved={approved}")
         self.console.print(f"summary={summary}")
+        pending = [item for item in self.session.approval_queue if item.status in {"pending", "deferred"}]
+        if pending:
+            self.console.print(f"approval_queue={len(pending)} pending items. Use /queue or /review.")
 
     def _interactive_completion_available(self) -> bool:
         return PromptSession is not None and sys.stdin.isatty() and sys.stdout.isatty()
@@ -342,12 +375,19 @@ class ChatSession:
         return ""
 
     def _resolve_command(self, command: str) -> str:
-        if command in CHAT_COMMANDS:
-            return command
-        matches = [name for name in CHAT_COMMANDS if name.startswith(command)]
+        base = command.split(" ", 1)[0]
+        if base in CHAT_COMMANDS:
+            return base
+        matches = [name for name in CHAT_COMMANDS if name.startswith(base)]
         if len(matches) == 1:
             return matches[0]
-        return command
+        return base
+
+    def _parse_command(self, line: str) -> tuple[str, str]:
+        base = self._resolve_command(line)
+        parts = line.split(" ", 1)
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        return base, argument
 
     def _build_banner(self) -> Panel:
         banner = Text()
@@ -410,6 +450,118 @@ class ChatSession:
         for skill in self.skills[:20]:
             table.add_row(skill.name, skill.description)
         self.console.print(table)
+
+    def _append_run_approval_items(self, run_dir: Path) -> None:
+        integration_path = run_dir / "integration.json"
+        if not integration_path.exists():
+            return
+        payload = json.loads(integration_path.read_text(encoding="utf-8"))
+        run_id = run_dir.name
+        queue_items: list[ApprovalQueueItem] = []
+        for decision in payload.get("decisions", []):
+            status = "approved" if decision["status"] == "auto_accepted" else (
+                "rejected" if decision["status"] == "rejected" else "pending"
+            )
+            queue_items.append(
+                ApprovalQueueItem(
+                    item_id=f"{run_id}:{decision['item_id']}",
+                    run_id=run_id,
+                    role=decision["role"],
+                    path=decision["path"],
+                    model=decision.get("model", ""),
+                    status=status,
+                    policy_status=decision["status"],
+                    reason=decision["reason"],
+                    diff_path=decision.get("diff_path", ""),
+                    proposal_path=decision.get("proposal_path", ""),
+                )
+            )
+        self.session = append_approval_items(
+            self.project_root,
+            self.config.runtime_root,
+            self.session,
+            queue_items,
+        )
+
+    def _print_queue(self) -> None:
+        if not self.session.approval_queue:
+            self.console.print("No approval items queued.")
+            return
+        table = create_table("Approval Queue")
+        table.add_column("No.")
+        table.add_column("Status")
+        table.add_column("Role")
+        table.add_column("Path")
+        table.add_column("Reason")
+        for index, item in enumerate(self.session.approval_queue, start=1):
+            marker = "*" if item.item_id == self.session.current_approval_id else ""
+            table.add_row(str(index), f"{item.status}{marker}", item.role, item.path, item.reason)
+        self.console.print(table)
+
+    def _show_selected_approval(self) -> None:
+        if not self.session.current_approval_id:
+            self.console.print("No approval item is currently selected.")
+            return
+        item = get_queue_item(self.session, self.session.current_approval_id)
+        if item is None:
+            self.console.print("Selected approval item was not found.")
+            return
+        self._print_approval_item(item)
+
+    def _pick_approval(self, argument: str) -> None:
+        if not argument.isdigit():
+            self.console.print("Use `/pick <number>` to open one approval item.")
+            return
+        index = int(argument)
+        if index < 1 or index > len(self.session.approval_queue):
+            self.console.print("Approval item number is out of range.")
+            return
+        item = self.session.approval_queue[index - 1]
+        self.session = select_approval_item(
+            self.project_root,
+            self.config.runtime_root,
+            self.session,
+            item.item_id,
+        )
+        self._print_approval_item(item)
+
+    def _update_selected_approval(self, status: str) -> None:
+        if not self.session.current_approval_id:
+            self.console.print("No approval item is currently selected.")
+            return
+        item = get_queue_item(self.session, self.session.current_approval_id)
+        if item is None:
+            self.console.print("Selected approval item was not found.")
+            return
+        self.session = update_approval_item(
+            self.project_root,
+            self.config.runtime_root,
+            self.session,
+            item_id=item.item_id,
+            status=status,  # type: ignore[arg-type]
+        )
+        self.console.print(f"{status}: {item.path}")
+
+    def _print_approval_item(self, item: ApprovalQueueItem) -> None:
+        self.console.print(
+            "\n".join(
+                [
+                    f"approval_item={item.item_id}",
+                    f"run_id={item.run_id}",
+                    f"role={item.role}",
+                    f"model={item.model}",
+                    f"status={item.status}",
+                    f"policy_status={item.policy_status}",
+                    f"path={item.path}",
+                    f"reason={item.reason}",
+                ]
+            )
+        )
+        if item.diff_path and Path(item.diff_path).exists():
+            self.console.print("--- diff ---")
+            self.console.print(Path(item.diff_path).read_text(encoding="utf-8"))
+        else:
+            self.console.print("No diff available for this item.")
 
     def _resume_session(self) -> None:
         sessions = list_sessions(self.project_root, self.config.runtime_root, limit=20)

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from mao_cli.security import bounded_text, sanitize_text, validate_run_id
 
 SessionMode = Literal["mock", "live"]
+ApprovalItemStatus = Literal["pending", "approved", "rejected", "deferred"]
 
 
 class SessionTurn(BaseModel):
@@ -33,6 +34,21 @@ class ChatSessionState(BaseModel):
     with_worktrees: bool = False
     turns: list[SessionTurn] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    approval_queue: list["ApprovalQueueItem"] = Field(default_factory=list)
+    current_approval_id: str = ""
+
+
+class ApprovalQueueItem(BaseModel):
+    item_id: str
+    run_id: str
+    role: str
+    path: str
+    model: str
+    status: ApprovalItemStatus
+    policy_status: str
+    reason: str
+    diff_path: str
+    proposal_path: str
 
 
 def sessions_root(project_root: Path, runtime_root: str) -> Path:
@@ -111,6 +127,64 @@ def append_turn(
             defects=[sanitize_text(item) for item in defects],
         )
     )
+    save_session(project_root, runtime_root, session)
+    return session
+
+
+def append_approval_items(
+    project_root: Path,
+    runtime_root: str,
+    session: ChatSessionState,
+    items: list[ApprovalQueueItem],
+) -> ChatSessionState:
+    existing_ids = {item.item_id for item in session.approval_queue}
+    for item in items:
+        if item.item_id not in existing_ids:
+            session.approval_queue.append(item)
+    if not session.current_approval_id:
+        next_item = next((item for item in session.approval_queue if item.status in {"pending", "deferred"}), None)
+        if next_item:
+            session.current_approval_id = next_item.item_id
+    save_session(project_root, runtime_root, session)
+    return session
+
+
+def get_queue_item(session: ChatSessionState, item_id: str) -> ApprovalQueueItem | None:
+    for item in session.approval_queue:
+        if item.item_id == item_id:
+            return item
+    return None
+
+
+def update_approval_item(
+    project_root: Path,
+    runtime_root: str,
+    session: ChatSessionState,
+    *,
+    item_id: str,
+    status: ApprovalItemStatus,
+) -> ChatSessionState:
+    for item in session.approval_queue:
+        if item.item_id == item_id:
+            item.status = status
+            break
+    if session.current_approval_id == item_id and status in {"approved", "rejected"}:
+        session.current_approval_id = ""
+    if not session.current_approval_id:
+        next_item = next((item for item in session.approval_queue if item.status in {"pending", "deferred"}), None)
+        if next_item:
+            session.current_approval_id = next_item.item_id
+    save_session(project_root, runtime_root, session)
+    return session
+
+
+def select_approval_item(
+    project_root: Path,
+    runtime_root: str,
+    session: ChatSessionState,
+    item_id: str,
+) -> ChatSessionState:
+    session.current_approval_id = item_id
     save_session(project_root, runtime_root, session)
     return session
 

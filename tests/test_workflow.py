@@ -288,6 +288,21 @@ def test_chat_resume_command_restores_session(tmp_path: Path) -> None:
     assert "last_run=" in second.stdout
 
 
+def test_chat_approval_queue_commands() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--mock"],
+        input="Build a task tracker\n/queue\n/pick 1\n/defer\n/queue\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "approval_queue=" in result.stdout
+    assert "Approval Queue" in result.stdout
+    assert "approval_item=" in result.stdout
+    assert "deferred:" in result.stdout
+
+
 def test_chat_live_preflight_fails_cleanly(tmp_path: Path) -> None:
     config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-live-config.yaml")
     config_path.write_text(

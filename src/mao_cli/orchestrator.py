@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import difflib
 from fnmatch import fnmatch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -299,7 +300,7 @@ def render_summary(run: WorkflowRun) -> str:
     return "\n".join(lines)
 
 
-def persist_run(run: WorkflowRun, output_dir: Path) -> Path:
+def persist_run(run: WorkflowRun, output_dir: Path, repository_root: Path) -> Path:
     run_dir = output_dir / run.run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run.json").write_text(
@@ -307,7 +308,7 @@ def persist_run(run: WorkflowRun, output_dir: Path) -> Path:
         encoding="utf-8",
     )
     (run_dir / "summary.md").write_text(render_summary(run), encoding="utf-8")
-    _write_integration_outputs(run, run_dir)
+    _write_integration_outputs(run, run_dir, repository_root)
     return run_dir
 
 
@@ -567,7 +568,7 @@ def execute_workflow(
             message="approved" if verdict.approved else "defects found",
         )
 
-    run_dir = persist_run(run, output_dir)
+    run_dir = persist_run(run, output_dir, repository_root)
     _emit_event(event_handler, "workflow_completed", run_id=run.run_id, message="workflow completed")
     return run_dir
 
@@ -804,6 +805,7 @@ def _build_integration_decisions(
             if normalized in conflict_paths:
                 decisions.append(
                     IntegrationDecision(
+                        item_id=f"{exchange.role}:{normalized}",
                         role=exchange.role,
                         path=normalized,
                         status=_status_from_mode(config.approval.conflict_mode),
@@ -816,6 +818,7 @@ def _build_integration_decisions(
             if normalized in shared_paths:
                 decisions.append(
                     IntegrationDecision(
+                        item_id=f"{exchange.role}:{normalized}",
                         role=exchange.role,
                         path=normalized,
                         status=_status_from_mode(config.approval.shared_path_mode),
@@ -828,6 +831,7 @@ def _build_integration_decisions(
             if normalized in rejected_paths:
                 decisions.append(
                     IntegrationDecision(
+                        item_id=f"{exchange.role}:{normalized}",
                         role=exchange.role,
                         path=normalized,
                         status="rejected",
@@ -839,6 +843,7 @@ def _build_integration_decisions(
                 continue
             decisions.append(
                 IntegrationDecision(
+                    item_id=f"{exchange.role}:{normalized}",
                     role=exchange.role,
                     path=normalized,
                     status=_status_from_mode(base_mode),
@@ -901,7 +906,41 @@ def _emit_event(
     )
 
 
-def _write_integration_outputs(run: WorkflowRun, run_dir: Path) -> None:
+def _write_integration_outputs(run: WorkflowRun, run_dir: Path, repository_root: Path) -> None:
+    latest_exchange_by_role = _latest_exchange_by_role(run)
+    diffs_root = run_dir / "diffs"
+    proposals_root = run_dir / "proposals"
+    diffs_root.mkdir(parents=True, exist_ok=True)
+    proposals_root.mkdir(parents=True, exist_ok=True)
+
+    for decision in run.integration_decisions:
+        exchange = latest_exchange_by_role.get(decision.role)
+        proposed_content = _build_proposed_content(decision, exchange)
+        proposal_path = proposals_root / decision.role / decision.path
+        proposal_path.parent.mkdir(parents=True, exist_ok=True)
+        proposal_path.write_text(proposed_content, encoding="utf-8")
+        decision.proposal_path = str(proposal_path)
+
+        base_path = repository_root / decision.path
+        base_lines = (
+            base_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if base_path.exists()
+            else []
+        )
+        proposed_lines = proposed_content.splitlines()
+        diff_text = "\n".join(
+            difflib.unified_diff(
+                base_lines,
+                proposed_lines,
+                fromfile=str(base_path),
+                tofile=str(proposal_path),
+                lineterm="",
+            )
+        )
+        diff_file = diffs_root / f"{decision.role}-{_safe_diff_name(decision.path)}.diff"
+        diff_file.write_text(diff_text, encoding="utf-8")
+        decision.diff_path = str(diff_file)
+
     integration_payload = {
         "notes": run.integration_notes,
         "decisions": [decision.model_dump() for decision in run.integration_decisions],
@@ -923,3 +962,27 @@ def _write_integration_outputs(run: WorkflowRun, run_dir: Path) -> None:
         )
         lines.append("")
     (run_dir / "integration.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _latest_exchange_by_role(run: WorkflowRun) -> dict[str, AgentExchange]:
+    latest: dict[str, AgentExchange] = {}
+    for exchange in run.exchanges:
+        latest[exchange.role] = exchange
+    return latest
+
+
+def _build_proposed_content(decision: IntegrationDecision, exchange: AgentExchange | None) -> str:
+    body = exchange.response if exchange is not None else "No worker response available."
+    return "\n".join(
+        [
+            f"# Proposed change for {decision.path}",
+            f"# role: {decision.role}",
+            f"# model: {decision.model}",
+            "",
+            body,
+        ]
+    )
+
+
+def _safe_diff_name(path: str) -> str:
+    return path.replace("\\", "_").replace("/", "_").replace(":", "_")

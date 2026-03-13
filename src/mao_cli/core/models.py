@@ -72,12 +72,15 @@ class WorkflowEvent(BaseModel):
 
 
 class IntegrationDecision(BaseModel):
+    item_id: str
     role: str
     path: str
     status: IntegrationDecisionStatus
     reason: str
     policy_source: str
     model: str = ""
+    diff_path: str = ""
+    proposal_path: str = ""
 
 
 class WorkflowRun(BaseModel):
