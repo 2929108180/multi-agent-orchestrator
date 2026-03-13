@@ -1,5 +1,7 @@
 # Test Manual
 
+English | [简体中文](./test-manual.zh-CN.md) | [한국어](./test-manual.ko-KR.md)
+
 ## Goal
 
 This manual is for validating the full MAO workflow from basic health checks to chat, approvals, capability registry, and live-mode preflight.
