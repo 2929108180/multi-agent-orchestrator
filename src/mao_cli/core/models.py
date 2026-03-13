@@ -79,6 +79,7 @@ class IntegrationDecision(BaseModel):
     reason: str
     policy_source: str
     model: str = ""
+    shared_file: bool = False
     diff_path: str = ""
     proposal_path: str = ""
 

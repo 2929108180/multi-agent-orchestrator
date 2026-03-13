@@ -62,3 +62,7 @@ def test_registry_commands() -> None:
     )
     assert register_mcp.exit_code == 0
     assert "registered=demo_mcp" in register_mcp.stdout
+
+    merge_list = runner.invoke(app, ["merge", "list"])
+    assert merge_list.exit_code == 0
+    assert "Merge Candidates" in merge_list.stdout

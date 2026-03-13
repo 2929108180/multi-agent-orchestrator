@@ -11,7 +11,14 @@ from pydantic import BaseModel, Field
 from mao_cli.security import bounded_text, sanitize_text, validate_run_id
 
 SessionMode = Literal["mock", "live"]
-ApprovalItemStatus = Literal["pending", "approved", "rejected", "deferred"]
+ApprovalItemStatus = Literal[
+    "pending",
+    "approved",
+    "rejected",
+    "deferred",
+    "applied_to_integration",
+    "blocked_shared",
+]
 
 
 class SessionTurn(BaseModel):
@@ -49,6 +56,8 @@ class ApprovalQueueItem(BaseModel):
     reason: str
     diff_path: str
     proposal_path: str
+    merge_candidate_id: str = ""
+    shared_file: bool = False
 
 
 def sessions_root(project_root: Path, runtime_root: str) -> Path:

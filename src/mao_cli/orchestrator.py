@@ -20,6 +20,7 @@ from mao_cli.core.models import (
     WorkerWorkspaceInfo,
 )
 from mao_cli.gitops import WorkerWorkspace, create_worker_worktrees, write_worker_note
+from mao_cli.mergeflow import MergeCandidate
 from mao_cli.providers import ModelGateway
 from mao_cli.security import bounded_text, validate_requirement
 
@@ -128,6 +129,7 @@ def _render_review_prompt(
     conversation_context: str = "",
     team_context: str = "",
     review_memory: str = "",
+    capability_context: str = "",
 ) -> str:
     focus = "\n".join(f"- {item}" for item in plan.review_focus)
     contract = "\n".join(f"- {item}" for item in plan.shared_contract)
@@ -141,6 +143,8 @@ def _render_review_prompt(
         sections.extend(["Team context:", team_context])
     if review_memory:
         sections.extend(["Review memory:", review_memory])
+    if capability_context:
+        sections.extend(["Capability context:", capability_context])
     sections.extend(
         [
             "Shared contract:",
@@ -324,6 +328,7 @@ def execute_workflow(
     team_context: str = "",
     task_memories: dict[str, str] | None = None,
     review_memory: str = "",
+    capability_contexts: dict[str, str] | None = None,
 ) -> Path:
     requirement = validate_requirement(requirement)
     gateway = ModelGateway(config=config, force_mock=force_mock)
@@ -381,7 +386,10 @@ def execute_workflow(
     backend_prompt = _render_worker_prompt(plan, plan.backend_task)
     frontend_task_memory = (task_memories or {}).get("frontend", "")
     backend_task_memory = (task_memories or {}).get("backend", "")
-    if conversation_context or team_context or frontend_task_memory:
+    frontend_capability_context = (capability_contexts or {}).get("frontend", "")
+    backend_capability_context = (capability_contexts or {}).get("backend", "")
+    reviewer_capability_context = (capability_contexts or {}).get("reviewer", "")
+    if conversation_context or team_context or frontend_task_memory or frontend_capability_context:
         context_sections: list[str] = []
         if conversation_context:
             context_sections.extend(["Conversation context:", conversation_context])
@@ -389,9 +397,11 @@ def execute_workflow(
             context_sections.extend(["Team context:", team_context])
         if frontend_task_memory:
             context_sections.extend(["Task memory:", frontend_task_memory])
+        if frontend_capability_context:
+            context_sections.extend(["Capability context:", frontend_capability_context])
         context_block = _render_prompt_sections(context_sections)
         frontend_prompt = frontend_prompt + "\n\n" + context_block
-    if conversation_context or team_context or backend_task_memory:
+    if conversation_context or team_context or backend_task_memory or backend_capability_context:
         context_sections = []
         if conversation_context:
             context_sections.extend(["Conversation context:", conversation_context])
@@ -399,6 +409,8 @@ def execute_workflow(
             context_sections.extend(["Team context:", team_context])
         if backend_task_memory:
             context_sections.extend(["Task memory:", backend_task_memory])
+        if backend_capability_context:
+            context_sections.extend(["Capability context:", backend_capability_context])
         backend_prompt = backend_prompt + "\n\n" + _render_prompt_sections(context_sections)
     _emit_event(event_handler, "frontend_started", role="frontend", run_id=run.run_id, message="running")
     _emit_event(event_handler, "backend_started", role="backend", run_id=run.run_id, message="running")
@@ -421,6 +433,7 @@ def execute_workflow(
         conversation_context=conversation_context,
         team_context=team_context,
         review_memory=review_memory,
+        capability_context=reviewer_capability_context,
     )
     _emit_event(event_handler, "review_started", role="reviewer", run_id=run.run_id, message="checking")
     review_exchange = _call("reviewer", review_prompt, 0)
@@ -531,6 +544,7 @@ def execute_workflow(
             conversation_context=conversation_context,
             team_context=team_context,
             review_memory=review_memory,
+            capability_context=reviewer_capability_context,
         )
         _emit_event(
             event_handler,
@@ -825,6 +839,7 @@ def _build_integration_decisions(
                         reason="shared path must go through integration",
                         policy_source="shared_path_mode",
                         model=exchange.model,
+                        shared_file=True,
                     )
                 )
                 continue
@@ -832,26 +847,28 @@ def _build_integration_decisions(
                 decisions.append(
                     IntegrationDecision(
                         item_id=f"{exchange.role}:{normalized}",
-                        role=exchange.role,
-                        path=normalized,
-                        status="rejected",
+                    role=exchange.role,
+                    path=normalized,
+                    status="rejected",
                         reason="path violates worker ownership rules",
-                        policy_source="ownership",
-                        model=exchange.model,
-                    )
+                    policy_source="ownership",
+                    model=exchange.model,
+                    shared_file=False,
                 )
-                continue
-            decisions.append(
-                IntegrationDecision(
+            )
+            continue
+        decisions.append(
+            IntegrationDecision(
                     item_id=f"{exchange.role}:{normalized}",
                     role=exchange.role,
                     path=normalized,
                     status=_status_from_mode(base_mode),
-                    reason="clean worker-owned path",
-                    policy_source=policy_source,
-                    model=exchange.model,
-                )
+                reason="clean worker-owned path",
+                policy_source=policy_source,
+                model=exchange.model,
+                shared_file=False,
             )
+        )
     return decisions
 
 
@@ -962,6 +979,7 @@ def _write_integration_outputs(run: WorkflowRun, run_dir: Path, repository_root:
         )
         lines.append("")
     (run_dir / "integration.md").write_text("\n".join(lines), encoding="utf-8")
+    _write_merge_candidate_outputs(run, run_dir)
 
 
 def _latest_exchange_by_role(run: WorkflowRun) -> dict[str, AgentExchange]:
@@ -977,3 +995,36 @@ def _build_proposed_content(decision: IntegrationDecision, exchange: AgentExchan
 
 def _safe_diff_name(path: str) -> str:
     return path.replace("\\", "_").replace("/", "_").replace(":", "_")
+
+
+def _write_merge_candidate_outputs(run: WorkflowRun, run_dir: Path) -> None:
+    candidates = [
+        MergeCandidate(
+            run_id=run.run_id,
+            item_id=decision.item_id,
+            role=decision.role,
+            path=decision.path,
+            model=decision.model,
+            integration_workspace="",
+            applied_path="",
+            shared_file=decision.shared_file,
+            status=(
+                "blocked_shared"
+                if decision.shared_file
+                else ("ready_for_merge" if decision.status == "auto_accepted" else decision.status)
+            ),
+            reason=decision.reason,
+        )
+        for decision in run.integration_decisions
+    ]
+    (run_dir / "merge_candidates.json").write_text(
+        json.dumps([candidate.model_dump(mode="json") for candidate in candidates], indent=2),
+        encoding="utf-8",
+    )
+    lines = ["# Merge Candidates", ""]
+    for candidate in candidates:
+        lines.append(
+            f"- [{candidate.status}] {candidate.role} -> {candidate.path} shared={candidate.shared_file}"
+        )
+    lines.append("")
+    (run_dir / "merge_candidates.md").write_text("\n".join(lines), encoding="utf-8")

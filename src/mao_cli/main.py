@@ -7,6 +7,7 @@ import typer
 from mao_cli.chat import ChatSession
 from mao_cli.config import load_config
 from mao_cli.mcp_server import run_mcp_server
+from mao_cli.mergeflow import list_merge_candidates
 from mao_cli.registry import (
     assign_mcp_access,
     assign_skill_access,
@@ -32,9 +33,11 @@ console = create_console()
 skills_app = typer.Typer(help="Manage skill registry entries.")
 mcp_app = typer.Typer(help="Manage MCP registry entries.")
 policy_app = typer.Typer(help="Inspect approval and capability policy.")
+merge_app = typer.Typer(help="Inspect merge candidates.")
 app.add_typer(skills_app, name="skills")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(policy_app, name="policy")
+app.add_typer(merge_app, name="merge")
 
 
 def _project_root() -> Path:
@@ -530,6 +533,31 @@ def policy_show(
     for model, rule in loaded.approval.provider_overrides.items():
         providers.add_row(model, rule.mode)
     console.print(providers)
+
+
+@merge_app.command("list")
+def merge_list(limit: int = typer.Option(20, "--limit", min=1, max=200)) -> None:
+    """List merge candidates stored by MAO."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    candidates = list_merge_candidates(project_root, runtime_root, limit=limit)
+    table = create_table("Merge Candidates")
+    table.add_column("Candidate")
+    table.add_column("Run")
+    table.add_column("Role")
+    table.add_column("Path")
+    table.add_column("Status")
+    table.add_column("Shared")
+    for item in candidates:
+        table.add_row(
+            item.candidate_id,
+            item.run_id,
+            item.role,
+            item.path,
+            item.status,
+            str(item.shared_file),
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

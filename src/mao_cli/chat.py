@@ -11,11 +11,14 @@ from rich.text import Text
 from mao_cli.config import AppConfig, load_config
 from mao_cli.core.models import WorkflowEvent
 from mao_cli.gitops import WorkerWorkspace, apply_proposal_to_workspace, ensure_named_worktree
+from mao_cli.mergeflow import MergeCandidate, append_merge_candidate, list_merge_candidates
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.registry import (
     assign_mcp_access,
     assign_skill_access,
+    filter_mcp_servers_for,
+    filter_skills_for,
     import_local_mcp,
     import_local_skills,
     load_mcp_registry,
@@ -158,7 +161,7 @@ class ChatSession:
             )
         self.console.print(
             "[magenta]Built-in commands:[/magenta] "
-            "/help /status /doctor /mode /history /context /skills /mcp "
+            "/help /status /doctor /mode /history /context /skills /mcp /merge "
             "/skill-import-local /mcp-import-local /grant-skill /grant-mcp "
             "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /exit"
         )
@@ -267,6 +270,9 @@ class ChatSession:
         if command == "/mcp":
             self._print_mcp_servers()
             return False
+        if command == "/merge":
+            self._print_merge_candidates()
+            return False
         if command == "/skill-import-local":
             self._import_local_skills()
             return False
@@ -330,6 +336,10 @@ class ChatSession:
             "backend": build_task_memory(self.session, "backend"),
         }
         review_memory = build_review_memory(self.session)
+        capability_contexts = {
+            role: self._build_capability_context(role)
+            for role in ("frontend", "backend", "reviewer")
+        }
         run_dir = execute_workflow(
             requirement=requirement,
             config=self.config,
@@ -342,6 +352,7 @@ class ChatSession:
             team_context=self.team_context,
             task_memories=task_memories,
             review_memory=review_memory,
+            capability_contexts=capability_contexts,
         )
         self.last_run_dir = run_dir
 
@@ -458,6 +469,31 @@ class ChatSession:
                 lines.append(f"  - {entry.name}: {entry.description}")
         return "\n".join(lines)
 
+    def _build_capability_context(self, role: str) -> str:
+        model = self.config.providers[role].model
+        skills = filter_skills_for(
+            self.project_root,
+            self.config.runtime_root,
+            role=role,
+            model=model,
+        )
+        mcp_servers = filter_mcp_servers_for(
+            self.project_root,
+            self.config.runtime_root,
+            role=role,
+            model=model,
+        )
+        lines = [f"Capabilities for {role} ({model}):"]
+        if skills:
+            lines.append("Skills:")
+            for entry in skills[:8]:
+                lines.append(f"- {entry.name}: {entry.description}")
+        if mcp_servers:
+            lines.append("MCP servers:")
+            for entry in mcp_servers[:8]:
+                lines.append(f"- {entry.name}: transport={entry.transport}")
+        return "\n".join(lines)
+
     def _load_or_create_session(self, *, session_id: str | None, resume_latest: bool) -> ChatSessionState:
         if session_id:
             return load_session(self.project_root, self.config.runtime_root, session_id)
@@ -516,6 +552,29 @@ class ChatSession:
         table.add_column("Source")
         for server in servers:
             table.add_row(server.name, server.transport, server.source)
+        self.console.print(table)
+
+    def _print_merge_candidates(self) -> None:
+        candidates = list_merge_candidates(self.project_root, self.config.runtime_root, limit=20)
+        if not candidates:
+            self.console.print("No merge candidates available.")
+            return
+        table = create_table("Merge Candidates")
+        table.add_column("Candidate")
+        table.add_column("Run")
+        table.add_column("Role")
+        table.add_column("Path")
+        table.add_column("Status")
+        table.add_column("Shared")
+        for item in candidates:
+            table.add_row(
+                item.candidate_id,
+                item.run_id,
+                item.role,
+                item.path,
+                item.status,
+                str(item.shared_file),
+            )
         self.console.print(table)
 
     def _import_local_skills(self) -> None:
@@ -741,6 +800,35 @@ class ChatSession:
         self.console.print("Left approval item unchanged.")
 
     def _apply_approved_item(self, item: ApprovalQueueItem) -> None:
+        if item.shared_file:
+            self.console.print("shared file routed to integration actor")
+            self.session = update_approval_item(
+                self.project_root,
+                self.config.runtime_root,
+                self.session,
+                item_id=item.item_id,
+                status="blocked_shared",
+            )
+            candidate = MergeCandidate(
+                run_id=item.run_id,
+                item_id=item.item_id,
+                role=item.role,
+                path=item.path,
+                model=item.model,
+                integration_workspace="",
+                applied_path="",
+                shared_file=True,
+                status="blocked_shared",
+                reason=item.reason,
+            )
+            target = append_merge_candidate(self.project_root, self.config.runtime_root, candidate)
+            queue_item = get_queue_item(self.session, item.item_id)
+            if queue_item is not None:
+                queue_item.merge_candidate_id = candidate.candidate_id
+            self.console.print(f"merge_candidate={candidate.candidate_id}")
+            self.console.print(f"merge_registry={target}")
+            return
+
         integration_root = self.project_root.parent / f"{self.project_root.name}-integrations"
         workspace = ensure_named_worktree(
             repository_root=self.project_root,
@@ -753,7 +841,32 @@ class ChatSession:
             relative_path=item.path,
             proposal_path=item.proposal_path,
         )
+        candidate = MergeCandidate(
+            run_id=item.run_id,
+            item_id=item.item_id,
+            role=item.role,
+            path=item.path,
+            model=item.model,
+            integration_workspace=workspace.path,
+            applied_path=str(target_path),
+            shared_file=False,
+            status="ready_for_merge",
+            reason=item.reason,
+        )
+        target = append_merge_candidate(self.project_root, self.config.runtime_root, candidate)
+        self.session = update_approval_item(
+            self.project_root,
+            self.config.runtime_root,
+            self.session,
+            item_id=item.item_id,
+            status="applied_to_integration",
+        )
+        queue_item = get_queue_item(self.session, item.item_id)
+        if queue_item is not None:
+            queue_item.merge_candidate_id = candidate.candidate_id
         self.console.print(f"applied_to={target_path}")
+        self.console.print(f"merge_candidate={candidate.candidate_id}")
+        self.console.print(f"merge_registry={target}")
 
     def _resume_session(self) -> None:
         sessions = list_sessions(self.project_root, self.config.runtime_root, limit=20)

@@ -89,6 +89,7 @@ mao mcp register demo_mcp --transport streamable-http --url http://localhost:812
 mao mcp grant demo_mcp --role reviewer
 
 mao policy show
+mao merge list
 ```
 
 ## Chat Mode
@@ -193,3 +194,4 @@ pytest
 - [docs/architecture-baseline.md](./docs/architecture-baseline.md)
 - [docs/progress.md](./docs/progress.md)
 - [docs/team-mode.md](./docs/team-mode.md)
+- [docs/architecture-layers.md](./docs/architecture-layers.md)

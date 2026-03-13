@@ -99,12 +99,46 @@ def registered_or_discovered_skills(project_root: Path, runtime_root: str) -> li
     ]
 
 
+def filter_skills_for(
+    project_root: Path,
+    runtime_root: str,
+    *,
+    role: str,
+    model: str,
+) -> list[SkillRecord]:
+    records = registered_or_discovered_skills(project_root, runtime_root)
+    visible: list[SkillRecord] = []
+    for record in records:
+        role_match = not record.roles or role in record.roles
+        model_match = not record.models or model in record.models
+        if role_match and model_match and record.enabled:
+            visible.append(record)
+    return visible
+
+
 def load_mcp_registry(project_root: Path, runtime_root: str) -> list[MCPServerRecord]:
     path = mcp_registry_path(project_root, runtime_root)
     if not path.exists():
         return []
     payload = json.loads(path.read_text(encoding="utf-8"))
     return [MCPServerRecord.model_validate(item) for item in payload]
+
+
+def filter_mcp_servers_for(
+    project_root: Path,
+    runtime_root: str,
+    *,
+    role: str,
+    model: str,
+) -> list[MCPServerRecord]:
+    records = load_mcp_registry(project_root, runtime_root)
+    visible: list[MCPServerRecord] = []
+    for record in records:
+        role_match = not record.roles or role in record.roles
+        model_match = not record.models or model in record.models
+        if role_match and model_match and record.enabled:
+            visible.append(record)
+    return visible
 
 
 def save_mcp_registry(project_root: Path, runtime_root: str, records: list[MCPServerRecord]) -> Path:

@@ -77,6 +77,15 @@ def ensure_named_worktree(
     return WorkerWorkspace(role=worktree_name, path=str(role_path), git_ref=git_ref)
 
 
+def integration_workspace_for_run(repository_root: Path, run_id: str) -> WorkerWorkspace:
+    integration_root = repository_root.parent / f"{repository_root.name}-integrations"
+    return ensure_named_worktree(
+        repository_root=repository_root,
+        workspace_root=integration_root / run_id,
+        worktree_name="integration",
+    )
+
+
 def write_worker_note(workspace: WorkerWorkspace, content: str, filename: str = "WORKER_NOTES.md") -> Path:
     note_path = Path(workspace.path) / filename
     note_path.write_text(content, encoding="utf-8")
