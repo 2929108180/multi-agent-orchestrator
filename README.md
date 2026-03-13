@@ -50,6 +50,7 @@ mao mcp-serve --transport streamable-http --host 127.0.0.1 --port 8000
 `mao chat` provides an interactive shell over the current workflow.
 
 - Enter a requirement to trigger one workflow run
+- Watch workflow stage updates in real time during chat execution
 - Type `/` and use `Tab` in a real terminal to complete slash commands
 - Use `/help` to see commands and their purpose
 - Use `/status`, `/doctor`, `/last`, and `/exit` during a session

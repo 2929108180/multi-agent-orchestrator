@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from mao_cli.config import AppConfig, load_config
+from mao_cli.core.models import WorkflowEvent
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import validate_requirement
@@ -190,6 +191,7 @@ class ChatSession:
             repository_root=self.project_root,
             force_mock=self.mock,
             with_worktrees=self.with_worktrees,
+            event_handler=self._handle_workflow_event,
         )
         self.last_run_dir = run_dir
 
@@ -212,3 +214,38 @@ class ChatSession:
             return PromptSession(completer=SlashCommandCompleter())
         except Exception:
             return None
+
+    def _handle_workflow_event(self, event: WorkflowEvent) -> None:
+        line = self._format_event(event)
+        if line:
+            self.console.print(line)
+
+    def _format_event(self, event: WorkflowEvent) -> str:
+        role = event.role or "workflow"
+        if event.event_type == "workflow_started":
+            return "workflow: started"
+        if event.event_type == "architect_started":
+            return "architect: planning"
+        if event.event_type == "architect_completed":
+            return "architect: completed"
+        if event.event_type == "frontend_started":
+            return "frontend: running"
+        if event.event_type == "backend_started":
+            return "backend: running"
+        if event.event_type == "frontend_completed":
+            return "frontend: completed"
+        if event.event_type == "backend_completed":
+            return "backend: completed"
+        if event.event_type == "review_started":
+            return "reviewer: checking"
+        if event.event_type == "review_completed":
+            return f"reviewer: {event.message}"
+        if event.event_type == "repair_round_started":
+            return f"repair round {event.round_index}"
+        if event.event_type == "repair_target_started":
+            return f"{role}: repairing"
+        if event.event_type == "repair_target_completed":
+            return f"{role}: repaired"
+        if event.event_type == "workflow_completed":
+            return "workflow: completed"
+        return ""

@@ -5,8 +5,9 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from mao_cli.main import app
+from mao_cli.core.models import WorkflowEvent
 from mao_cli.gitops import create_worker_worktrees
-from mao_cli.orchestrator import parse_review_verdict
+from mao_cli.orchestrator import execute_workflow, parse_review_verdict
 
 
 def test_status_command() -> None:
@@ -146,4 +147,30 @@ def test_chat_runs_workflow(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "Running workflow..." in result.stdout
+    assert "architect: planning" in result.stdout
+    assert "reviewer: approved" in result.stdout
     assert "Run artifacts saved to:" in result.stdout
+
+
+def test_execute_workflow_emits_events(tmp_path: Path) -> None:
+    from mao_cli.config import load_config
+
+    config = load_config(Path("E:/Ai/multi-agent-orchestrator/configs/local.example.yaml"))
+    events: list[WorkflowEvent] = []
+    execute_workflow(
+        requirement="Build a task tracker",
+        config=config,
+        output_dir=tmp_path,
+        repository_root=Path("E:/Ai/multi-agent-orchestrator"),
+        force_mock=True,
+        with_worktrees=False,
+        event_handler=events.append,
+    )
+
+    event_types = [event.event_type for event in events]
+    assert "workflow_started" in event_types
+    assert "architect_started" in event_types
+    assert "frontend_started" in event_types
+    assert "backend_started" in event_types
+    assert "review_completed" in event_types
+    assert event_types[-1] == "workflow_completed"

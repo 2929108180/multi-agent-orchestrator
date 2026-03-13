@@ -59,6 +59,14 @@ class WorkerWorkspaceInfo(BaseModel):
     note_path: str = ""
 
 
+class WorkflowEvent(BaseModel):
+    event_type: str
+    role: str = ""
+    round_index: int = 0
+    message: str = ""
+    run_id: str = ""
+
+
 class WorkflowRun(BaseModel):
     run_id: str = Field(default_factory=lambda: uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

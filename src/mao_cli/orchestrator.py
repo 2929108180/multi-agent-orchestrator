@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 from mao_cli.config import AppConfig
 from mao_cli.core.models import (
@@ -11,6 +12,7 @@ from mao_cli.core.models import (
     ReviewDefect,
     ReviewVerdict,
     WorkerTask,
+    WorkflowEvent,
     WorkflowRun,
     WorkerWorkspaceInfo,
 )
@@ -259,11 +261,13 @@ def execute_workflow(
     repository_root: Path,
     force_mock: bool = False,
     with_worktrees: bool = False,
+    event_handler: Callable[[WorkflowEvent], None] | None = None,
 ) -> Path:
     requirement = validate_requirement(requirement)
     gateway = ModelGateway(config=config, force_mock=force_mock)
     plan = build_architect_plan(requirement)
     run = WorkflowRun(requirement=requirement, plan=plan)
+    _emit_event(event_handler, "workflow_started", run_id=run.run_id, message="workflow started")
 
     workspace_map: dict[str, WorkerWorkspace] = {}
     if with_worktrees:
@@ -298,10 +302,15 @@ def execute_workflow(
             "Summarize the delivery slice and critical interface assumptions.",
         ]
     )
-    run.exchanges.append(_call("architect", architect_prompt))
+    _emit_event(event_handler, "architect_started", role="architect", run_id=run.run_id, message="planning")
+    architect_exchange = _call("architect", architect_prompt)
+    run.exchanges.append(architect_exchange)
+    _emit_event(event_handler, "architect_completed", role="architect", run_id=run.run_id, message="plan ready")
 
     frontend_prompt = _render_worker_prompt(plan, plan.frontend_task)
     backend_prompt = _render_worker_prompt(plan, plan.backend_task)
+    _emit_event(event_handler, "frontend_started", role="frontend", run_id=run.run_id, message="running")
+    _emit_event(event_handler, "backend_started", role="backend", run_id=run.run_id, message="running")
     with ThreadPoolExecutor(max_workers=2) as executor:
         frontend_future = executor.submit(_call, "frontend", frontend_prompt, 0)
         backend_future = executor.submit(_call, "backend", backend_prompt, 0)
@@ -309,6 +318,8 @@ def execute_workflow(
         backend_exchange = backend_future.result()
 
     run.exchanges.extend([frontend_exchange, backend_exchange])
+    _emit_event(event_handler, "frontend_completed", role="frontend", run_id=run.run_id, message="completed")
+    _emit_event(event_handler, "backend_completed", role="backend", run_id=run.run_id, message="completed")
     _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
 
     review_prompt = _render_review_prompt(
@@ -317,10 +328,18 @@ def execute_workflow(
         frontend_response=frontend_exchange.response,
         backend_response=backend_exchange.response,
     )
+    _emit_event(event_handler, "review_started", role="reviewer", run_id=run.run_id, message="checking")
     review_exchange = _call("reviewer", review_prompt, 0)
     run.exchanges.append(review_exchange)
     verdict = parse_review_verdict(review_exchange.response)
     run.verdicts.append(verdict)
+    _emit_event(
+        event_handler,
+        "review_completed",
+        role="reviewer",
+        run_id=run.run_id,
+        message="approved" if verdict.approved else "defects found",
+    )
 
     repair_round = 0
     current_frontend_exchange = frontend_exchange
@@ -333,9 +352,34 @@ def execute_workflow(
             break
 
         repair_round += 1
+        _emit_event(
+            event_handler,
+            "repair_round_started",
+            run_id=run.run_id,
+            round_index=repair_round,
+            message=f"repair round {repair_round}",
+        )
         frontend_repair_prompt = _render_repair_prompt(frontend_prompt, frontend_defects)
         backend_repair_prompt = _render_repair_prompt(backend_prompt, backend_defects)
         with ThreadPoolExecutor(max_workers=2) as executor:
+            if frontend_defects:
+                _emit_event(
+                    event_handler,
+                    "repair_target_started",
+                    role="frontend",
+                    run_id=run.run_id,
+                    round_index=repair_round,
+                    message="repairing",
+                )
+            if backend_defects:
+                _emit_event(
+                    event_handler,
+                    "repair_target_started",
+                    role="backend",
+                    run_id=run.run_id,
+                    round_index=repair_round,
+                    message="repairing",
+                )
             frontend_future = (
                 executor.submit(_call, "frontend", frontend_repair_prompt, repair_round)
                 if frontend_defects
@@ -349,9 +393,25 @@ def execute_workflow(
             if frontend_future is not None:
                 current_frontend_exchange = frontend_future.result()
                 run.exchanges.append(current_frontend_exchange)
+                _emit_event(
+                    event_handler,
+                    "repair_target_completed",
+                    role="frontend",
+                    run_id=run.run_id,
+                    round_index=repair_round,
+                    message="repaired",
+                )
             if backend_future is not None:
                 current_backend_exchange = backend_future.result()
                 run.exchanges.append(current_backend_exchange)
+                _emit_event(
+                    event_handler,
+                    "repair_target_completed",
+                    role="backend",
+                    run_id=run.run_id,
+                    round_index=repair_round,
+                    message="repaired",
+                )
 
         _write_workspace_notes(run, workspace_map, current_frontend_exchange, current_backend_exchange)
         review_prompt = _render_review_prompt(
@@ -360,12 +420,30 @@ def execute_workflow(
             frontend_response=current_frontend_exchange.response,
             backend_response=current_backend_exchange.response,
         )
+        _emit_event(
+            event_handler,
+            "review_started",
+            role="reviewer",
+            run_id=run.run_id,
+            round_index=repair_round,
+            message="checking",
+        )
         review_exchange = _call("reviewer", review_prompt, repair_round)
         run.exchanges.append(review_exchange)
         verdict = parse_review_verdict(review_exchange.response)
         run.verdicts.append(verdict)
+        _emit_event(
+            event_handler,
+            "review_completed",
+            role="reviewer",
+            run_id=run.run_id,
+            round_index=repair_round,
+            message="approved" if verdict.approved else "defects found",
+        )
 
-    return persist_run(run, output_dir)
+    run_dir = persist_run(run, output_dir)
+    _emit_event(event_handler, "workflow_completed", run_id=run.run_id, message="workflow completed")
+    return run_dir
 
 
 def _write_workspace_notes(
@@ -487,4 +565,26 @@ def _render_repair_prompt(task_prompt: str, defects: list[ReviewDefect]) -> str:
             *defect_lines,
             "Revise your proposal and keep it consistent with the shared contract.",
         ]
+    )
+
+
+def _emit_event(
+    event_handler: Callable[[WorkflowEvent], None] | None,
+    event_type: str,
+    *,
+    role: str = "",
+    round_index: int = 0,
+    message: str = "",
+    run_id: str = "",
+) -> None:
+    if event_handler is None:
+        return
+    event_handler(
+        WorkflowEvent(
+            event_type=event_type,
+            role=role,
+            round_index=round_index,
+            message=message,
+            run_id=run_id,
+        )
     )
