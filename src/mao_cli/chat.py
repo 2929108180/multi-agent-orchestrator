@@ -1,14 +1,57 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.table import Table
 
 from mao_cli.config import AppConfig, load_config
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import validate_requirement
+
+try:
+    from prompt_toolkit import PromptSession
+    from prompt_toolkit.completion import CompleteEvent, Completer, Completion
+    from prompt_toolkit.document import Document
+except ImportError:  # pragma: no cover - fallback when optional dependency is unavailable
+    PromptSession = None
+    CompleteEvent = object
+    Document = object
+
+    class Completer:  # type: ignore[no-redef]
+        pass
+
+    class Completion:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+CHAT_COMMANDS = {
+    "/help": "Show built-in commands and how chat mode works.",
+    "/status": "Show the current chat session settings.",
+    "/doctor": "Show provider readiness for this chat session.",
+    "/last": "Show the latest run directory from this session.",
+    "/exit": "Exit the chat session.",
+    "/quit": "Exit the chat session.",
+}
+
+
+class SlashCommandCompleter(Completer):
+    def get_completions(self, document: Document, complete_event: CompleteEvent):
+        text = document.text_before_cursor
+        if not text.startswith("/"):
+            return
+        lowered = text.lower()
+        for command, description in CHAT_COMMANDS.items():
+            if command.startswith(lowered):
+                yield Completion(
+                    command,
+                    start_position=-len(text),
+                    display=command,
+                    display_meta=description,
+                )
 
 
 class ChatSession:
@@ -30,17 +73,22 @@ class ChatSession:
         self.with_worktrees = with_worktrees
         self.console = console
         self.last_run_dir: Path | None = None
+        self.prompt_session = None
 
     def print_welcome(self) -> None:
         self.console.print("Multi-Agent Orchestrator chat")
         self.console.print("Type a requirement to run the workflow.")
+        if self._interactive_completion_available():
+            self.console.print("Type `/` to see commands. Use `Tab` to complete slash commands.")
+        else:
+            self.console.print("Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.")
         self.console.print("Built-in commands: /help /status /doctor /last /exit")
 
     def run(self) -> None:
         self.print_welcome()
         while True:
             try:
-                raw = input("mao> ")
+                raw = self._prompt()
             except EOFError:
                 self.console.print("Chat closed.")
                 return
@@ -58,17 +106,44 @@ class ChatSession:
 
             self._run_requirement(line)
 
+    def _prompt(self) -> str:
+        if not self._interactive_completion_available():
+            return input("mao> ")
+        if self.prompt_session is None:
+            self.prompt_session = self._create_prompt_session()
+        if self.prompt_session is None:
+            return input("mao> ")
+        return self.prompt_session.prompt(
+            "mao> ",
+            complete_while_typing=True,
+            bottom_toolbar=self._bottom_toolbar,
+        )
+
+    def _bottom_toolbar(self) -> str:
+        if self.prompt_session is None:
+            return "Enter a requirement, or use /help for commands."
+        current = self.prompt_session.default_buffer.document.text.strip().lower()
+        if current in CHAT_COMMANDS:
+            return CHAT_COMMANDS[current]
+        if current.startswith("/"):
+            matches = [cmd for cmd in CHAT_COMMANDS if cmd.startswith(current)]
+            if matches:
+                return " | ".join(f"{cmd}: {CHAT_COMMANDS[cmd]}" for cmd in matches[:3])
+        return "Enter a requirement, or type `/` and press Tab for commands."
+
     def _handle_command(self, line: str) -> bool:
         command = line.lower()
         if command in {"/exit", "/quit"}:
             self.console.print("Chat closed.")
             return True
         if command == "/help":
+            table = Table(title="Chat Commands")
+            table.add_column("Command")
+            table.add_column("Purpose")
+            for name, purpose in CHAT_COMMANDS.items():
+                table.add_row(name, purpose)
             self.console.print("Enter a product or coding requirement to run one workflow.")
-            self.console.print("/status -> show session settings")
-            self.console.print("/doctor -> show provider readiness for this session")
-            self.console.print("/last -> show latest run directory")
-            self.console.print("/exit -> leave chat")
+            self.console.print(table)
             return False
         if command == "/status":
             self.console.print(
@@ -127,3 +202,13 @@ class ChatSession:
         self.console.print(f"approved={approved}")
         self.console.print(f"summary={summary}")
 
+    def _interactive_completion_available(self) -> bool:
+        return PromptSession is not None and sys.stdin.isatty() and sys.stdout.isatty()
+
+    def _create_prompt_session(self):
+        if PromptSession is None:
+            return None
+        try:
+            return PromptSession(completer=SlashCommandCompleter())
+        except Exception:
+            return None
