@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from mao_cli.main import app
 from mao_cli.gitops import create_worker_worktrees
+from mao_cli.orchestrator import parse_review_verdict
 
 
 def test_status_command() -> None:
@@ -41,6 +42,7 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
 
     assert summary.exists()
     assert payload["verdicts"][-1]["approved"] is True
+    assert payload["verdicts"][0]["defects"][0]["owner"] == "frontend"
 
 
 def test_validate_command_fails_when_live_env_missing() -> None:
@@ -56,6 +58,29 @@ def test_validate_command_fails_when_live_env_missing() -> None:
 
     assert result.exit_code == 1
     assert "Missing environment variable" in result.stdout
+
+
+def test_parse_review_verdict_with_structured_defect() -> None:
+    verdict = parse_review_verdict(
+        "\n".join(
+            [
+                "APPROVED: no",
+                "SUMMARY: Frontend and backend endpoint names are inconsistent.",
+                "DEFECT:",
+                "ID: api-path-mismatch",
+                "OWNER: frontend",
+                "SEVERITY: high",
+                "TITLE: API path mismatch",
+                "SUMMARY: Frontend uses /api/task-items while backend exposes /api/tasks.",
+                "ACTION: Change the frontend integration to /api/tasks.",
+            ]
+        )
+    )
+
+    assert verdict.approved is False
+    assert len(verdict.defects) == 1
+    assert verdict.defects[0].owner == "frontend"
+    assert "Change the frontend integration" in verdict.frontend_action
 
 
 def test_create_worker_worktrees(tmp_path: Path) -> None:

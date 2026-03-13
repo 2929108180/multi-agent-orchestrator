@@ -53,6 +53,13 @@ The project reuses existing components instead of rebuilding them:
 - `Typer` and `Rich` for the CLI
 - `Pydantic` for configs and run records
 
+## Current Safety Guardrails
+
+- MCP-triggered workflow execution stays in mock mode
+- Config paths used by CLI and MCP must stay inside the project root
+- Run ids are validated before reading artifacts
+- Requirement and defect text are length-bounded before execution and storage
+
 ## Development
 
 Create a virtual environment and install the project in editable mode.

@@ -8,6 +8,7 @@ from mao_cli.config import AppConfig
 from mao_cli.core.models import (
     AgentExchange,
     ArchitectPlan,
+    ReviewDefect,
     ReviewVerdict,
     WorkerTask,
     WorkflowRun,
@@ -15,6 +16,7 @@ from mao_cli.core.models import (
 )
 from mao_cli.gitops import WorkerWorkspace, create_worker_worktrees, write_worker_note
 from mao_cli.providers import ModelGateway
+from mao_cli.security import bounded_text, validate_requirement
 
 
 def build_architect_plan(requirement: str) -> ArchitectPlan:
@@ -104,10 +106,13 @@ def _render_review_prompt(
             "Return this exact format:",
             "APPROVED: yes|no",
             "SUMMARY: one line",
-            "FINDINGS:",
-            "- finding 1",
-            "FRONTEND_ACTION: action or NONE",
-            "BACKEND_ACTION: action or NONE",
+            "DEFECT:",
+            "ID: stable-defect-id",
+            "OWNER: frontend|backend|shared",
+            "SEVERITY: low|medium|high",
+            "TITLE: short title",
+            "SUMMARY: one line description",
+            "ACTION: one concrete action",
         ]
     )
 
@@ -118,31 +123,57 @@ def parse_review_verdict(review_response: str) -> ReviewVerdict:
     findings: list[str] = []
     frontend_action = ""
     backend_action = ""
+    defects: list[ReviewDefect] = []
+    defect_fields: dict[str, str] = {}
 
     mode = ""
     for raw_line in review_response.splitlines():
         line = raw_line.strip()
         if not line:
             continue
+
+        if line == "DEFECT:":
+            _append_defect_from_fields(defects, defect_fields)
+            defect_fields = {}
+            mode = "defect"
+            continue
         if line.startswith("APPROVED:"):
+            _append_defect_from_fields(defects, defect_fields)
+            defect_fields = {}
             approved = line.split(":", 1)[1].strip().lower() == "yes"
             mode = ""
         elif line.startswith("SUMMARY:"):
-            summary = line.split(":", 1)[1].strip()
-            mode = ""
+            value = bounded_text(line.split(":", 1)[1].strip())
+            if mode == "defect":
+                defect_fields["summary"] = value
+            else:
+                summary = value
+                mode = ""
         elif line.startswith("FINDINGS:"):
             mode = "findings"
-        elif line.startswith("FRONTEND_ACTION:"):
+        elif line.startswith("FRONTEND_ACTION:") and not defects:
             frontend_action = line.split(":", 1)[1].strip()
             mode = ""
-        elif line.startswith("BACKEND_ACTION:"):
+        elif line.startswith("BACKEND_ACTION:") and not defects:
             backend_action = line.split(":", 1)[1].strip()
             mode = ""
+        elif mode == "defect" and ":" in line:
+            key, value = line.split(":", 1)
+            defect_fields[key.strip().lower()] = bounded_text(value.strip())
         elif mode == "findings" and line.startswith("-"):
-            findings.append(line.lstrip("- ").strip())
+            findings.append(bounded_text(line.lstrip("- ").strip()))
+
+    _append_defect_from_fields(defects, defect_fields)
 
     if not summary:
         summary = "Review completed with unstructured output."
+
+    if defects:
+        findings = [defect.summary for defect in defects]
+        frontend_action = "; ".join(defect.action for defect in defects if defect.owner in {"frontend", "shared"})
+        backend_action = "; ".join(defect.action for defect in defects if defect.owner in {"backend", "shared"})
+    elif not defects:
+        defects = _legacy_actions_to_defects(frontend_action, backend_action, findings)
 
     return ReviewVerdict(
         approved=approved,
@@ -150,6 +181,7 @@ def parse_review_verdict(review_response: str) -> ReviewVerdict:
         findings=findings,
         frontend_action=frontend_action,
         backend_action=backend_action,
+        defects=defects,
     )
 
 
@@ -193,6 +225,15 @@ def render_summary(run: WorkflowRun) -> str:
                 "",
             ]
         )
+        if verdict.defects:
+            lines.append("### Defects")
+            lines.extend(
+                [
+                    f"- [{defect.owner}/{defect.severity}] {defect.title}: {defect.action}"
+                    for defect in verdict.defects
+                ]
+            )
+            lines.append("")
         if verdict.findings:
             lines.extend([f"- {item}" for item in verdict.findings])
             lines.append("")
@@ -219,6 +260,7 @@ def execute_workflow(
     force_mock: bool = False,
     with_worktrees: bool = False,
 ) -> Path:
+    requirement = validate_requirement(requirement)
     gateway = ModelGateway(config=config, force_mock=force_mock)
     plan = build_architect_plan(requirement)
     run = WorkflowRun(requirement=requirement, plan=plan)
@@ -281,37 +323,42 @@ def execute_workflow(
     run.verdicts.append(verdict)
 
     repair_round = 0
+    current_frontend_exchange = frontend_exchange
+    current_backend_exchange = backend_exchange
     while not verdict.approved and repair_round < config.workflow.max_repair_rounds:
-        repair_round += 1
-        frontend_repair_prompt = "\n".join(
-            [
-                frontend_prompt,
-                "",
-                f"Reviewer feedback: {verdict.frontend_action}",
-                "Revise your proposal and keep it consistent with the shared contract.",
-            ]
-        )
-        backend_repair_prompt = "\n".join(
-            [
-                backend_prompt,
-                "",
-                f"Reviewer feedback: {verdict.backend_action}",
-                "Revise your proposal and keep it consistent with the shared contract.",
-            ]
-        )
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            frontend_future = executor.submit(_call, "frontend", frontend_repair_prompt, repair_round)
-            backend_future = executor.submit(_call, "backend", backend_repair_prompt, repair_round)
-            frontend_exchange = frontend_future.result()
-            backend_exchange = backend_future.result()
+        defects_by_owner = _group_defects_by_owner(verdict.defects)
+        frontend_defects = defects_by_owner["frontend"] + defects_by_owner["shared"]
+        backend_defects = defects_by_owner["backend"] + defects_by_owner["shared"]
+        if not frontend_defects and not backend_defects:
+            break
 
-        run.exchanges.extend([frontend_exchange, backend_exchange])
-        _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
+        repair_round += 1
+        frontend_repair_prompt = _render_repair_prompt(frontend_prompt, frontend_defects)
+        backend_repair_prompt = _render_repair_prompt(backend_prompt, backend_defects)
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            frontend_future = (
+                executor.submit(_call, "frontend", frontend_repair_prompt, repair_round)
+                if frontend_defects
+                else None
+            )
+            backend_future = (
+                executor.submit(_call, "backend", backend_repair_prompt, repair_round)
+                if backend_defects
+                else None
+            )
+            if frontend_future is not None:
+                current_frontend_exchange = frontend_future.result()
+                run.exchanges.append(current_frontend_exchange)
+            if backend_future is not None:
+                current_backend_exchange = backend_future.result()
+                run.exchanges.append(current_backend_exchange)
+
+        _write_workspace_notes(run, workspace_map, current_frontend_exchange, current_backend_exchange)
         review_prompt = _render_review_prompt(
             requirement=requirement,
             plan=plan,
-            frontend_response=frontend_exchange.response,
-            backend_response=backend_exchange.response,
+            frontend_response=current_frontend_exchange.response,
+            backend_response=current_backend_exchange.response,
         )
         review_exchange = _call("reviewer", review_prompt, repair_round)
         run.exchanges.append(review_exchange)
@@ -349,3 +396,95 @@ def _write_workspace_notes(
         for workspace_info in run.workspaces:
             if workspace_info.role == exchange.role:
                 workspace_info.note_path = str(note_path)
+
+
+def _append_defect_from_fields(defects: list[ReviewDefect], fields: dict[str, str]) -> None:
+    if not fields:
+        return
+    defect_id = bounded_text(fields.get("id", "unspecified-defect"), limit=100)
+    title = bounded_text(fields.get("title", "Untitled defect"), limit=160)
+    owner = fields.get("owner", "shared").lower()
+    if owner not in {"frontend", "backend", "shared"}:
+        owner = "shared"
+    severity = fields.get("severity", "medium").lower()
+    if severity not in {"low", "medium", "high"}:
+        severity = "medium"
+    summary = bounded_text(fields.get("summary", "No summary provided."))
+    action = bounded_text(fields.get("action", "Review and align the implementation."))
+    defects.append(
+        ReviewDefect(
+            defect_id=defect_id,
+            title=title,
+            owner=owner,  # type: ignore[arg-type]
+            severity=severity,  # type: ignore[arg-type]
+            summary=summary,
+            action=action,
+        )
+    )
+
+
+def _legacy_actions_to_defects(
+    frontend_action: str,
+    backend_action: str,
+    findings: list[str],
+) -> list[ReviewDefect]:
+    defects: list[ReviewDefect] = []
+    if frontend_action and frontend_action.upper() != "NONE":
+        defects.append(
+            ReviewDefect(
+                defect_id="legacy-frontend-action",
+                title="Frontend follow-up required",
+                owner="frontend",
+                severity="high",
+                summary=bounded_text(findings[0] if findings else frontend_action),
+                action=bounded_text(frontend_action),
+            )
+        )
+    if backend_action and backend_action.upper() != "NONE":
+        defects.append(
+            ReviewDefect(
+                defect_id="legacy-backend-action",
+                title="Backend follow-up required",
+                owner="backend",
+                severity="high",
+                summary=bounded_text(findings[0] if findings else backend_action),
+                action=bounded_text(backend_action),
+            )
+        )
+    return defects
+
+
+def _group_defects_by_owner(defects: list[ReviewDefect]) -> dict[str, list[ReviewDefect]]:
+    grouped: dict[str, list[ReviewDefect]] = {
+        "frontend": [],
+        "backend": [],
+        "shared": [],
+    }
+    for defect in defects:
+        grouped[defect.owner].append(defect)
+    return grouped
+
+
+def _render_repair_prompt(task_prompt: str, defects: list[ReviewDefect]) -> str:
+    defect_lines = []
+    for defect in defects:
+        defect_lines.extend(
+            [
+                "DEFECT:",
+                f"ID: {defect.defect_id}",
+                f"OWNER: {defect.owner}",
+                f"SEVERITY: {defect.severity}",
+                f"TITLE: {defect.title}",
+                f"SUMMARY: {defect.summary}",
+                f"ACTION: {defect.action}",
+            ]
+        )
+    return "\n".join(
+        [
+            task_prompt,
+            "",
+            "Reviewer defects assigned to you:",
+            *defect_lines,
+            "Revise your proposal and keep it consistent with the shared contract.",
+        ]
+    )

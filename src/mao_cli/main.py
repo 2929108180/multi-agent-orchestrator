@@ -10,6 +10,7 @@ from mao_cli.config import load_config
 from mao_cli.mcp_server import run_mcp_server
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
+from mao_cli.security import ensure_project_path, validate_requirement
 
 app = typer.Typer(
     help="CLI for orchestrating cross-vendor coding agents.",
@@ -20,6 +21,19 @@ console = Console()
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def _resolve_config_path(project_root: Path, config: Path) -> Path:
+    try:
+        return ensure_project_path(project_root, config, must_exist=True, label="config")
+    except FileNotFoundError as exc:
+        message = (
+            f"Config file not found: {config}. "
+            "Use a path under the project root, for example `configs/local.example.yaml`."
+        )
+        raise typer.BadParameter(message) from exc
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
 
 @app.command()
@@ -40,7 +54,7 @@ def doctor(
     project_root = _project_root()
     runtime_dir = project_root / "runtime"
     artifacts_dir = project_root / "artifacts"
-    config_path = config if config.is_absolute() else project_root / config
+    config_path = _resolve_config_path(project_root, config)
     loaded = load_config(config_path)
     provider_health = inspect_providers(config=loaded, force_mock=mock)
 
@@ -112,8 +126,10 @@ def status() -> None:
     table.add_row("Config models", "implemented")
     table.add_row("Mock multi-agent flow", "implemented")
     table.add_row("Live provider helpers", "implemented")
-    table.add_row("MCP integration", "pending")
-    table.add_row("Git worktree flow", "pending")
+    table.add_row("MCP integration", "implemented")
+    table.add_row("Git worktree flow", "implemented")
+    table.add_row("Structured repair routing", "implemented")
+    table.add_row("Security baseline", "implemented")
     console.print(table)
 
 
@@ -133,7 +149,7 @@ def validate(
 ) -> None:
     """Validate provider configuration and environment readiness."""
     project_root = _project_root()
-    config_path = config if config.is_absolute() else project_root / config
+    config_path = _resolve_config_path(project_root, config)
     loaded = load_config(config_path)
     rows = inspect_providers(config=loaded, force_mock=mock)
     not_ready = [row for row in rows if not row.ready]
@@ -175,7 +191,11 @@ def run(
 ) -> None:
     """Execute the current local orchestration workflow."""
     project_root = _project_root()
-    config_path = config if config.is_absolute() else project_root / config
+    try:
+        requirement = validate_requirement(requirement)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    config_path = _resolve_config_path(project_root, config)
     loaded = load_config(config_path)
     target_dir = output_dir or (project_root / loaded.artifacts_root / "runs")
     run_dir = execute_workflow(

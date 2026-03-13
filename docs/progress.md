@@ -18,8 +18,15 @@
 - [x] Add live multi-provider key validation helpers
 - [x] Add Git worktree integration
 - [x] Add MCP tool integration
-- [ ] Add structured review-to-repair routing
+- [x] Add structured review-to-repair routing
 - [ ] Add persistent run index and search
+
+## Security Baseline
+
+- [x] Restrict MCP-triggered execution to mock mode
+- [x] Add project-root config path checks
+- [x] Add run id validation for artifact reads
+- [x] Add bounded requirement and defect text handling
 
 ## Current Slice
 

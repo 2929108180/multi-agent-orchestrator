@@ -19,3 +19,4 @@ Thumbs.db
 *.db
 runtime/
 artifacts/
+wt/

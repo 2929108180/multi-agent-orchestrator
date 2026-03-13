@@ -7,6 +7,8 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 AgentRole = Literal["architect", "frontend", "backend", "reviewer"]
+DefectOwner = Literal["frontend", "backend", "shared"]
+DefectSeverity = Literal["low", "medium", "high"]
 
 
 class WorkerTask(BaseModel):
@@ -38,6 +40,16 @@ class ReviewVerdict(BaseModel):
     findings: list[str] = Field(default_factory=list)
     frontend_action: str = ""
     backend_action: str = ""
+    defects: list["ReviewDefect"] = Field(default_factory=list)
+
+
+class ReviewDefect(BaseModel):
+    defect_id: str
+    title: str
+    owner: DefectOwner
+    severity: DefectSeverity
+    summary: str
+    action: str
 
 
 class WorkerWorkspaceInfo(BaseModel):

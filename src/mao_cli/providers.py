@@ -65,7 +65,7 @@ class ModelGateway:
                 "Critical assumption: both workers must align on endpoint naming and payload fields."
             )
         if role == "frontend":
-            if "Reviewer feedback:" in prompt and "NONE" not in prompt:
+            if "DEFECT:" in prompt:
                 return (
                     "Frontend proposal revised:\n"
                     "- Use `/api/tasks` for list and create.\n"
@@ -82,7 +82,7 @@ class ModelGateway:
                 "- Include loading, empty, and error states."
             )
         if role == "backend":
-            if "Reviewer feedback:" in prompt and "NONE" not in prompt:
+            if "DEFECT:" in prompt:
                 return (
                     "Backend proposal revised:\n"
                     "- Expose `GET /api/tasks` and `POST /api/tasks`.\n"
@@ -103,20 +103,26 @@ class ModelGateway:
                     [
                         "APPROVED: no",
                         "SUMMARY: Frontend and backend endpoint names are inconsistent.",
-                        "FINDINGS:",
-                        "- Frontend uses `/api/task-items` while backend exposes `/api/tasks`.",
-                        "FRONTEND_ACTION: Change the frontend integration to `/api/tasks`.",
-                        "BACKEND_ACTION: NONE",
+                        "DEFECT:",
+                        "ID: api-path-mismatch",
+                        "OWNER: frontend",
+                        "SEVERITY: high",
+                        "TITLE: API path mismatch",
+                        "SUMMARY: Frontend uses `/api/task-items` while backend exposes `/api/tasks`.",
+                        "ACTION: Change the frontend integration to `/api/tasks`.",
                     ]
                 )
             return "\n".join(
                 [
                     "APPROVED: yes",
                     "SUMMARY: Frontend and backend are aligned on API shape and states.",
-                    "FINDINGS:",
-                    "- No blocking issues found in this round.",
-                    "FRONTEND_ACTION: NONE",
-                    "BACKEND_ACTION: NONE",
+                    "DEFECT:",
+                    "ID: no-blocking-issues",
+                    "OWNER: shared",
+                    "SEVERITY: low",
+                    "TITLE: No blocking issues",
+                    "SUMMARY: No blocking issues found in this round.",
+                    "ACTION: Keep the shared contract stable.",
                 ]
             )
         return f"Unhandled mock role `{role}`. Prompt was: {prompt}"

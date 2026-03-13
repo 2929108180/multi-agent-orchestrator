@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from mao_cli.config import load_config
 from mao_cli.orchestrator import execute_workflow
+from mao_cli.security import ensure_project_path, validate_requirement, validate_run_id
 
 
 class RunListItem(BaseModel):
@@ -85,9 +86,10 @@ def list_runs(limit: int = 10) -> list[RunListItem]:
 
 
 def read_run_summary(run_id: str) -> str:
-    summary_path = _project_root() / "artifacts" / "runs" / run_id / "summary.md"
+    safe_run_id = validate_run_id(run_id)
+    summary_path = _project_root() / "artifacts" / "runs" / safe_run_id / "summary.md"
     if not summary_path.exists():
-        raise FileNotFoundError(f"Run summary not found for `{run_id}`.")
+        raise FileNotFoundError(f"Run summary not found for `{safe_run_id}`.")
     return summary_path.read_text(encoding="utf-8")
 
 
@@ -97,9 +99,13 @@ def trigger_mock_workflow(
     with_worktrees: bool = False,
 ) -> WorkflowTriggerResult:
     project_root = _project_root()
-    absolute_config = Path(config_path)
-    if not absolute_config.is_absolute():
-        absolute_config = project_root / absolute_config
+    requirement = validate_requirement(requirement)
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
     config = load_config(absolute_config)
     output_dir = project_root / config.artifacts_root / "runs"
     run_dir = execute_workflow(
