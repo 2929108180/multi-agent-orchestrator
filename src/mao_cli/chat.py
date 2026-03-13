@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 from mao_cli.config import AppConfig, load_config
 from mao_cli.core.models import WorkflowEvent
@@ -37,6 +39,14 @@ CHAT_COMMANDS = {
     "/exit": "Exit the chat session.",
     "/quit": "Exit the chat session.",
 }
+
+CHAT_BANNER_LINES = [
+    r" __  __    _    ___  ",
+    r"|  \/  |  / \  / _ \ ",
+    r"| |\/| | / _ \| | | |",
+    r"| |  | |/ ___ \ |_| |",
+    r"|_|  |_/_/   \_\___/ ",
+]
 
 
 class SlashCommandCompleter(Completer):
@@ -77,13 +87,16 @@ class ChatSession:
         self.prompt_session = None
 
     def print_welcome(self) -> None:
-        self.console.print("Multi-Agent Orchestrator chat")
-        self.console.print("Type a requirement to run the workflow.")
+        self.console.print(self._build_banner())
+        self.console.print("[bold white]Multi-Agent Orchestrator chat[/bold white]")
+        self.console.print("[cyan]Type a requirement to run the workflow.[/cyan]")
         if self._interactive_completion_available():
-            self.console.print("Type `/` to see commands. Use `Tab` to complete slash commands.")
+            self.console.print("[green]Type `/` to see commands. Use `Tab` to complete slash commands.[/green]")
         else:
-            self.console.print("Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.")
-        self.console.print("Built-in commands: /help /status /doctor /last /exit")
+            self.console.print(
+                "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]"
+            )
+        self.console.print("[magenta]Built-in commands:[/magenta] /help /status /doctor /last /exit")
 
     def run(self) -> None:
         self.print_welcome()
@@ -257,3 +270,18 @@ class ChatSession:
         if len(matches) == 1:
             return matches[0]
         return command
+
+    def _build_banner(self) -> Panel:
+        banner = Text()
+        styles = ["bold cyan", "bold bright_blue", "bold bright_magenta", "bold bright_red", "bold yellow"]
+        for index, line in enumerate(CHAT_BANNER_LINES):
+            banner.append(line, style=styles[index % len(styles)])
+            banner.append("\n")
+        banner.append("Cross-vendor coding agents, one local cockpit.", style="bold white")
+        return Panel(
+            banner,
+            border_style="bright_blue",
+            title="[bold cyan]MAO[/bold cyan]",
+            subtitle="[bold magenta]chat[/bold magenta]",
+            padding=(1, 2),
+        )

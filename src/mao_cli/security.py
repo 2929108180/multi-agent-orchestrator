@@ -26,7 +26,7 @@ def ensure_project_path(
 
 
 def validate_requirement(requirement: str) -> str:
-    stripped = requirement.strip()
+    stripped = sanitize_text(requirement).strip()
     if not stripped:
         raise ValueError("Requirement cannot be empty.")
     if len(stripped) > MAX_REQUIREMENT_LENGTH:
@@ -43,7 +43,11 @@ def validate_run_id(run_id: str) -> str:
 
 
 def bounded_text(value: str, *, limit: int = MAX_DEFECT_TEXT_LENGTH) -> str:
-    cleaned = value.strip()
+    cleaned = sanitize_text(value).strip()
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 3].rstrip() + "..."
+
+
+def sanitize_text(value: str) -> str:
+    return value.encode("utf-8", errors="replace").decode("utf-8", errors="replace")

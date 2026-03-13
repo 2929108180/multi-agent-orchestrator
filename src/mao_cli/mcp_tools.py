@@ -71,7 +71,8 @@ def list_runs(limit: int = 10) -> list[RunListItem]:
             if verdicts:
                 approved = verdicts[-1].get("approved")
         if summary.exists():
-            summary_text = summary.read_text(encoding="utf-8").splitlines()[0]
+            summary_lines = summary.read_text(encoding="utf-8").splitlines()
+            summary_text = summary_lines[0] if summary_lines else ""
 
         items.append(
             RunListItem(
