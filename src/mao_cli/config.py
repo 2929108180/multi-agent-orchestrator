@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
 REQUIRED_PROVIDER_ROLES = ("architect", "frontend", "backend", "reviewer")
+ApprovalMode = Literal["auto", "manual", "reject"]
 DEFAULT_API_KEY_ENVS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -37,12 +39,32 @@ class WorkflowConfig(BaseModel):
     max_repair_rounds: int = Field(default=1, ge=0, le=5)
 
 
+class ApprovalRule(BaseModel):
+    mode: ApprovalMode = "manual"
+
+
+class ApprovalConfig(BaseModel):
+    default_mode: ApprovalMode = "manual"
+    shared_path_mode: ApprovalMode = "manual"
+    conflict_mode: ApprovalMode = "reject"
+    role_overrides: dict[str, ApprovalRule] = Field(default_factory=dict)
+    provider_overrides: dict[str, ApprovalRule] = Field(default_factory=dict)
+
+    def resolve_mode(self, *, role: str, model: str) -> tuple[ApprovalMode, str]:
+        if model in self.provider_overrides:
+            return self.provider_overrides[model].mode, f"provider:{model}"
+        if role in self.role_overrides:
+            return self.role_overrides[role].mode, f"role:{role}"
+        return self.default_mode, "default"
+
+
 class AppConfig(BaseModel):
     version: int = 1
     project_name: str = "multi-agent-orchestrator"
     runtime_root: str = "runtime"
     artifacts_root: str = "artifacts"
     workflow: WorkflowConfig = Field(default_factory=WorkflowConfig)
+    approval: ApprovalConfig = Field(default_factory=ApprovalConfig)
     providers: dict[str, ProviderConfig]
 
     @model_validator(mode="after")

@@ -182,8 +182,10 @@ def test_execute_workflow_emits_events(tmp_path: Path) -> None:
 
 def test_ownership_enforcement_detects_conflicts() -> None:
     from mao_cli.orchestrator import build_architect_plan
+    from mao_cli.config import load_config
 
     plan = build_architect_plan("Build a task tracker")
+    config = load_config(Path("E:/Ai/multi-agent-orchestrator/configs/local.example.yaml"))
     frontend_exchange = AgentExchange(
         role="frontend",
         model="mock/frontend",
@@ -200,6 +202,7 @@ def test_ownership_enforcement_detects_conflicts() -> None:
     )
 
     defects, notes = _evaluate_ownership(
+        config=config,
         frontend_task=plan.frontend_task,
         backend_task=plan.backend_task,
         frontend_exchange=frontend_exchange,

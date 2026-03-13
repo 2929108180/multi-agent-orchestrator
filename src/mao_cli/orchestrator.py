@@ -10,6 +10,7 @@ from mao_cli.config import AppConfig
 from mao_cli.core.models import (
     AgentExchange,
     ArchitectPlan,
+    IntegrationDecision,
     ReviewDefect,
     ReviewVerdict,
     WorkerTask,
@@ -285,6 +286,16 @@ def render_summary(run: WorkflowRun) -> str:
             lines.extend([f"- {item}" for item in verdict.findings])
             lines.append("")
 
+    if run.integration_decisions:
+        lines.extend(["## Integration Decisions"])
+        lines.extend(
+            [
+                f"- [{decision.status}] {decision.role} -> {decision.path} ({decision.reason})"
+                for decision in run.integration_decisions
+            ]
+        )
+        lines.append("")
+
     return "\n".join(lines)
 
 
@@ -296,6 +307,7 @@ def persist_run(run: WorkflowRun, output_dir: Path) -> Path:
         encoding="utf-8",
     )
     (run_dir / "summary.md").write_text(render_summary(run), encoding="utf-8")
+    _write_integration_outputs(run, run_dir)
     return run_dir
 
 
@@ -414,6 +426,7 @@ def execute_workflow(
     run.exchanges.append(review_exchange)
     verdict = parse_review_verdict(review_exchange.response)
     ownership_defects, integration_notes = _evaluate_ownership(
+        config=config,
         frontend_task=plan.frontend_task,
         backend_task=plan.backend_task,
         frontend_exchange=frontend_exchange,
@@ -421,6 +434,12 @@ def execute_workflow(
     )
     run.integration_notes.extend(integration_notes)
     verdict = _merge_enforcement_defects(verdict, ownership_defects)
+    run.integration_decisions = _build_integration_decisions(
+        config=config,
+        frontend_exchange=frontend_exchange,
+        backend_exchange=backend_exchange,
+        ownership_defects=ownership_defects,
+    )
     run.verdicts.append(verdict)
     _emit_event(
         event_handler,
@@ -524,6 +543,7 @@ def execute_workflow(
         run.exchanges.append(review_exchange)
         verdict = parse_review_verdict(review_exchange.response)
         ownership_defects, integration_notes = _evaluate_ownership(
+            config=config,
             frontend_task=plan.frontend_task,
             backend_task=plan.backend_task,
             frontend_exchange=current_frontend_exchange,
@@ -531,6 +551,12 @@ def execute_workflow(
         )
         run.integration_notes.extend(note for note in integration_notes if note not in run.integration_notes)
         verdict = _merge_enforcement_defects(verdict, ownership_defects)
+        run.integration_decisions = _build_integration_decisions(
+            config=config,
+            frontend_exchange=current_frontend_exchange,
+            backend_exchange=current_backend_exchange,
+            ownership_defects=ownership_defects,
+        )
         run.verdicts.append(verdict)
         _emit_event(
             event_handler,
@@ -692,6 +718,7 @@ def _extract_proposed_paths(response: str) -> list[str]:
 
 def _evaluate_ownership(
     *,
+    config: AppConfig,
     frontend_task: WorkerTask,
     backend_task: WorkerTask,
     frontend_exchange: AgentExchange,
@@ -745,6 +772,92 @@ def _evaluate_ownership(
     return defects, notes
 
 
+def _build_integration_decisions(
+    *,
+    config: AppConfig,
+    frontend_exchange: AgentExchange,
+    backend_exchange: AgentExchange,
+    ownership_defects: list[ReviewDefect],
+) -> list[IntegrationDecision]:
+    decisions: list[IntegrationDecision] = []
+    defect_lookup = {defect.summary: defect for defect in ownership_defects}
+    shared_paths = {
+        defect.summary.split("`")[1]
+        for defect in ownership_defects
+        if defect.title == "Integration layer required" and "`" in defect.summary
+    }
+    conflict_paths = {
+        defect.summary.rsplit(": ", 1)[-1]
+        for defect in ownership_defects
+        if defect.title == "Cross-worker file conflict"
+    }
+    rejected_paths = {
+        defect.summary.rsplit(": ", 1)[-1]
+        for defect in ownership_defects
+        if defect.title == "Ownership violation"
+    }
+
+    for exchange in (frontend_exchange, backend_exchange):
+        base_mode, policy_source = config.approval.resolve_mode(role=exchange.role, model=exchange.model)
+        for path in exchange.proposed_paths:
+            normalized = path.replace("\\", "/")
+            if normalized in conflict_paths:
+                decisions.append(
+                    IntegrationDecision(
+                        role=exchange.role,
+                        path=normalized,
+                        status=_status_from_mode(config.approval.conflict_mode),
+                        reason="conflict between workers",
+                        policy_source="conflict_mode",
+                        model=exchange.model,
+                    )
+                )
+                continue
+            if normalized in shared_paths:
+                decisions.append(
+                    IntegrationDecision(
+                        role=exchange.role,
+                        path=normalized,
+                        status=_status_from_mode(config.approval.shared_path_mode),
+                        reason="shared path must go through integration",
+                        policy_source="shared_path_mode",
+                        model=exchange.model,
+                    )
+                )
+                continue
+            if normalized in rejected_paths:
+                decisions.append(
+                    IntegrationDecision(
+                        role=exchange.role,
+                        path=normalized,
+                        status="rejected",
+                        reason="path violates worker ownership rules",
+                        policy_source="ownership",
+                        model=exchange.model,
+                    )
+                )
+                continue
+            decisions.append(
+                IntegrationDecision(
+                    role=exchange.role,
+                    path=normalized,
+                    status=_status_from_mode(base_mode),
+                    reason="clean worker-owned path",
+                    policy_source=policy_source,
+                    model=exchange.model,
+                )
+            )
+    return decisions
+
+
+def _status_from_mode(mode: str) -> str:
+    if mode == "auto":
+        return "auto_accepted"
+    if mode == "reject":
+        return "rejected"
+    return "needs_confirmation"
+
+
 def _merge_enforcement_defects(verdict: ReviewVerdict, extra_defects: list[ReviewDefect]) -> ReviewVerdict:
     if not extra_defects:
         return verdict
@@ -786,3 +899,27 @@ def _emit_event(
             run_id=run_id,
         )
     )
+
+
+def _write_integration_outputs(run: WorkflowRun, run_dir: Path) -> None:
+    integration_payload = {
+        "notes": run.integration_notes,
+        "decisions": [decision.model_dump() for decision in run.integration_decisions],
+    }
+    (run_dir / "integration.json").write_text(
+        json.dumps(integration_payload, indent=2),
+        encoding="utf-8",
+    )
+    lines = ["# Integration Decisions", ""]
+    if run.integration_notes:
+        lines.append("## Notes")
+        lines.extend(f"- {note}" for note in run.integration_notes)
+        lines.append("")
+    if run.integration_decisions:
+        lines.append("## Decisions")
+        lines.extend(
+            f"- [{decision.status}] {decision.role} -> {decision.path} ({decision.policy_source})"
+            for decision in run.integration_decisions
+        )
+        lines.append("")
+    (run_dir / "integration.md").write_text("\n".join(lines), encoding="utf-8")

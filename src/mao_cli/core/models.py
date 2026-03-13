@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 AgentRole = Literal["architect", "frontend", "backend", "reviewer"]
 DefectOwner = Literal["frontend", "backend", "shared"]
 DefectSeverity = Literal["low", "medium", "high"]
+IntegrationDecisionStatus = Literal["auto_accepted", "needs_confirmation", "rejected"]
 
 
 class WorkerTask(BaseModel):
@@ -70,6 +71,15 @@ class WorkflowEvent(BaseModel):
     run_id: str = ""
 
 
+class IntegrationDecision(BaseModel):
+    role: str
+    path: str
+    status: IntegrationDecisionStatus
+    reason: str
+    policy_source: str
+    model: str = ""
+
+
 class WorkflowRun(BaseModel):
     run_id: str = Field(default_factory=lambda: uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -79,3 +89,4 @@ class WorkflowRun(BaseModel):
     verdicts: list[ReviewVerdict] = Field(default_factory=list)
     workspaces: list[WorkerWorkspaceInfo] = Field(default_factory=list)
     integration_notes: list[str] = Field(default_factory=list)
+    integration_decisions: list[IntegrationDecision] = Field(default_factory=list)

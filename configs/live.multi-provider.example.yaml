@@ -4,6 +4,16 @@ runtime_root: runtime
 artifacts_root: artifacts
 workflow:
   max_repair_rounds: 2
+approval:
+  default_mode: manual
+  shared_path_mode: manual
+  conflict_mode: reject
+  role_overrides:
+    reviewer:
+      mode: reject
+  provider_overrides:
+    anthropic/claude-sonnet-4-20250514:
+      mode: auto
 providers:
   architect:
     adapter: openai
@@ -21,3 +31,7 @@ providers:
     adapter: openrouter
     model: openrouter/openai/gpt-4.1
     api_key_env: OPENROUTER_API_KEY
+    base_url: https://openrouter.ai/api/v1
+    extra_headers:
+      HTTP-Referer: https://localhost/mao
+      X-Title: multi-agent-orchestrator
