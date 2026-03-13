@@ -147,3 +147,37 @@ def build_conversation_context(session: ChatSessionState, limit: int = 3) -> str
         if turn.defects:
             lines.append(f"  Defects: {bounded_text('; '.join(turn.defects), limit=300)}")
     return "\n".join(lines)
+
+
+def build_task_memory(session: ChatSessionState, role: str, limit: int = 3) -> str:
+    turns = session.turns[-limit:]
+    if not turns:
+        return ""
+    lines = [f"Task memory for {role}:"]
+    for index, turn in enumerate(turns, start=1):
+        lines.extend(
+            [
+                f"- Recent request {index}: {bounded_text(turn.user_input, limit=220)}",
+                f"  Outcome: {bounded_text(turn.summary, limit=220)}",
+            ]
+        )
+        if turn.defects:
+            lines.append(f"  Prior review issues: {bounded_text('; '.join(turn.defects), limit=220)}")
+    return "\n".join(lines)
+
+
+def build_review_memory(session: ChatSessionState, limit: int = 3) -> str:
+    turns = session.turns[-limit:]
+    if not turns:
+        return ""
+    lines = ["Review memory:"]
+    for index, turn in enumerate(turns, start=1):
+        lines.extend(
+            [
+                f"- Reviewed request {index}: {bounded_text(turn.user_input, limit=220)}",
+                f"  Previous summary: {bounded_text(turn.summary, limit=220)}",
+            ]
+        )
+        if turn.defects:
+            lines.append(f"  Previous defects: {bounded_text('; '.join(turn.defects), limit=220)}")
+    return "\n".join(lines)

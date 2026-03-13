@@ -17,6 +17,8 @@ from mao_cli.sessions import (
     ChatSessionState,
     append_turn,
     build_conversation_context,
+    build_review_memory,
+    build_task_memory,
     clear_turns,
     create_session,
     load_latest_session,
@@ -252,6 +254,11 @@ class ChatSession:
 
         self.console.print("Running workflow...")
         conversation_context = build_conversation_context(self.session)
+        task_memories = {
+            "frontend": build_task_memory(self.session, "frontend"),
+            "backend": build_task_memory(self.session, "backend"),
+        }
+        review_memory = build_review_memory(self.session)
         run_dir = execute_workflow(
             requirement=requirement,
             config=self.config,
@@ -262,6 +269,8 @@ class ChatSession:
             event_handler=self._handle_workflow_event,
             conversation_context=conversation_context,
             team_context=self.team_context,
+            task_memories=task_memories,
+            review_memory=review_memory,
         )
         self.last_run_dir = run_dir
 

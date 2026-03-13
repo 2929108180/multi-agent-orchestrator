@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from fnmatch import fnmatch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
@@ -110,6 +111,9 @@ def _render_worker_prompt(plan: ArchitectPlan, task: WorkerTask) -> str:
             *[f"- {item}" for item in task.restricted_paths],
             "Do not change files outside your owned paths. Shared contract changes must be escalated to integration.",
             "Respond with a concise but concrete implementation proposal.",
+            "At the end, include:",
+            "FILE_TARGETS:",
+            "- relative/path/example.ext",
         ]
     )
 
@@ -121,6 +125,7 @@ def _render_review_prompt(
     backend_response: str,
     conversation_context: str = "",
     team_context: str = "",
+    review_memory: str = "",
 ) -> str:
     focus = "\n".join(f"- {item}" for item in plan.review_focus)
     contract = "\n".join(f"- {item}" for item in plan.shared_contract)
@@ -132,6 +137,8 @@ def _render_review_prompt(
         sections.extend(["Conversation context:", conversation_context])
     if team_context:
         sections.extend(["Team context:", team_context])
+    if review_memory:
+        sections.extend(["Review memory:", review_memory])
     sections.extend(
         [
             "Shared contract:",
@@ -302,6 +309,8 @@ def execute_workflow(
     event_handler: Callable[[WorkflowEvent], None] | None = None,
     conversation_context: str = "",
     team_context: str = "",
+    task_memories: dict[str, str] | None = None,
+    review_memory: str = "",
 ) -> Path:
     requirement = validate_requirement(requirement)
     gateway = ModelGateway(config=config, force_mock=force_mock)
@@ -332,7 +341,12 @@ def execute_workflow(
         provider = config.providers[role]
         response = gateway.complete(role=role, prompt=prompt)
         return AgentExchange(
-            role=role, model=provider.model, prompt=prompt, response=response, round_index=round_index
+            role=role,
+            model=provider.model,
+            prompt=prompt,
+            response=response,
+            round_index=round_index,
+            proposed_paths=_extract_proposed_paths(response),
         )
 
     architect_sections = [
@@ -352,15 +366,27 @@ def execute_workflow(
 
     frontend_prompt = _render_worker_prompt(plan, plan.frontend_task)
     backend_prompt = _render_worker_prompt(plan, plan.backend_task)
-    if conversation_context or team_context:
+    frontend_task_memory = (task_memories or {}).get("frontend", "")
+    backend_task_memory = (task_memories or {}).get("backend", "")
+    if conversation_context or team_context or frontend_task_memory:
         context_sections: list[str] = []
         if conversation_context:
             context_sections.extend(["Conversation context:", conversation_context])
         if team_context:
             context_sections.extend(["Team context:", team_context])
+        if frontend_task_memory:
+            context_sections.extend(["Task memory:", frontend_task_memory])
         context_block = _render_prompt_sections(context_sections)
         frontend_prompt = frontend_prompt + "\n\n" + context_block
-        backend_prompt = backend_prompt + "\n\n" + context_block
+    if conversation_context or team_context or backend_task_memory:
+        context_sections = []
+        if conversation_context:
+            context_sections.extend(["Conversation context:", conversation_context])
+        if team_context:
+            context_sections.extend(["Team context:", team_context])
+        if backend_task_memory:
+            context_sections.extend(["Task memory:", backend_task_memory])
+        backend_prompt = backend_prompt + "\n\n" + _render_prompt_sections(context_sections)
     _emit_event(event_handler, "frontend_started", role="frontend", run_id=run.run_id, message="running")
     _emit_event(event_handler, "backend_started", role="backend", run_id=run.run_id, message="running")
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -381,11 +407,20 @@ def execute_workflow(
         backend_response=backend_exchange.response,
         conversation_context=conversation_context,
         team_context=team_context,
+        review_memory=review_memory,
     )
     _emit_event(event_handler, "review_started", role="reviewer", run_id=run.run_id, message="checking")
     review_exchange = _call("reviewer", review_prompt, 0)
     run.exchanges.append(review_exchange)
     verdict = parse_review_verdict(review_exchange.response)
+    ownership_defects, integration_notes = _evaluate_ownership(
+        frontend_task=plan.frontend_task,
+        backend_task=plan.backend_task,
+        frontend_exchange=frontend_exchange,
+        backend_exchange=backend_exchange,
+    )
+    run.integration_notes.extend(integration_notes)
+    verdict = _merge_enforcement_defects(verdict, ownership_defects)
     run.verdicts.append(verdict)
     _emit_event(
         event_handler,
@@ -475,6 +510,7 @@ def execute_workflow(
             backend_response=current_backend_exchange.response,
             conversation_context=conversation_context,
             team_context=team_context,
+            review_memory=review_memory,
         )
         _emit_event(
             event_handler,
@@ -487,6 +523,14 @@ def execute_workflow(
         review_exchange = _call("reviewer", review_prompt, repair_round)
         run.exchanges.append(review_exchange)
         verdict = parse_review_verdict(review_exchange.response)
+        ownership_defects, integration_notes = _evaluate_ownership(
+            frontend_task=plan.frontend_task,
+            backend_task=plan.backend_task,
+            frontend_exchange=current_frontend_exchange,
+            backend_exchange=current_backend_exchange,
+        )
+        run.integration_notes.extend(note for note in integration_notes if note not in run.integration_notes)
+        verdict = _merge_enforcement_defects(verdict, ownership_defects)
         run.verdicts.append(verdict)
         _emit_event(
             event_handler,
@@ -626,6 +670,100 @@ def _render_repair_prompt(task_prompt: str, defects: list[ReviewDefect]) -> str:
 
 def _render_prompt_sections(parts: list[str]) -> str:
     return "\n".join(part for part in parts if part)
+
+
+def _extract_proposed_paths(response: str) -> list[str]:
+    paths: list[str] = []
+    capture = False
+    for raw_line in response.splitlines():
+        line = raw_line.strip()
+        if line == "FILE_TARGETS:":
+            capture = True
+            continue
+        if capture and line.startswith("-"):
+            candidate = line.lstrip("- ").strip()
+            if candidate:
+                paths.append(candidate)
+            continue
+        if capture and line and not line.startswith("-"):
+            break
+    return paths
+
+
+def _evaluate_ownership(
+    *,
+    frontend_task: WorkerTask,
+    backend_task: WorkerTask,
+    frontend_exchange: AgentExchange,
+    backend_exchange: AgentExchange,
+) -> tuple[list[ReviewDefect], list[str]]:
+    defects: list[ReviewDefect] = []
+    notes: list[str] = []
+    shared_prefixes = ("shared-contracts/", "contracts/", "schemas/", "shared/")
+
+    for task, exchange in ((frontend_task, frontend_exchange), (backend_task, backend_exchange)):
+        for path in exchange.proposed_paths:
+            normalized = path.replace("\\", "/")
+            if any(fnmatch(normalized, pattern) for pattern in task.restricted_paths):
+                defects.append(
+                    ReviewDefect(
+                        defect_id=f"ownership-{exchange.role}-{normalized}",
+                        title="Ownership violation",
+                        owner=exchange.role,
+                        severity="high",
+                        summary=f"{exchange.role} proposed a restricted path: {normalized}",
+                        action="Remove the restricted path and stay inside owned files only.",
+                    )
+                )
+            if any(normalized.startswith(prefix) for prefix in shared_prefixes):
+                notes.append(f"Shared path requires integration layer: {normalized}")
+                defects.append(
+                    ReviewDefect(
+                        defect_id=f"integration-{normalized}",
+                        title="Integration layer required",
+                        owner="shared",
+                        severity="high",
+                        summary=f"Shared path `{normalized}` must go through integration, not a worker directly.",
+                        action="Escalate this file to integration instead of assigning it to frontend or backend.",
+                    )
+                )
+
+    overlaps = set(frontend_exchange.proposed_paths).intersection(set(backend_exchange.proposed_paths))
+    for path in overlaps:
+        normalized = path.replace("\\", "/")
+        notes.append(f"Conflict detected between frontend and backend on: {normalized}")
+        defects.append(
+            ReviewDefect(
+                defect_id=f"conflict-{normalized}",
+                title="Cross-worker file conflict",
+                owner="shared",
+                severity="high",
+                summary=f"Both frontend and backend proposed the same file: {normalized}",
+                action="Reject direct worker writes and route this file through integration.",
+            )
+        )
+    return defects, notes
+
+
+def _merge_enforcement_defects(verdict: ReviewVerdict, extra_defects: list[ReviewDefect]) -> ReviewVerdict:
+    if not extra_defects:
+        return verdict
+    existing_ids = {defect.defect_id for defect in verdict.defects}
+    merged = verdict.defects[:]
+    for defect in extra_defects:
+        if defect.defect_id not in existing_ids:
+            merged.append(defect)
+    verdict.defects = merged
+    verdict.findings = [defect.summary for defect in merged]
+    verdict.frontend_action = "; ".join(
+        defect.action for defect in merged if defect.owner in {"frontend", "shared"}
+    )
+    verdict.backend_action = "; ".join(
+        defect.action for defect in merged if defect.owner in {"backend", "shared"}
+    )
+    if any(defect.severity == "high" for defect in merged):
+        verdict.approved = False
+    return verdict
 
 
 def _emit_event(

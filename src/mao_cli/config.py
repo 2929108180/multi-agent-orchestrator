@@ -20,6 +20,7 @@ class ProviderConfig(BaseModel):
     api_key_env: str | None = None
     base_url: str | None = None
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    extra_headers: dict[str, str] = Field(default_factory=dict)
 
     @property
     def uses_live_provider(self) -> bool:

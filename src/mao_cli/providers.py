@@ -43,6 +43,8 @@ class ModelGateway:
             extra_kwargs["api_key"] = api_key
         if provider.base_url:
             extra_kwargs["base_url"] = provider.base_url
+        if provider.extra_headers:
+            extra_kwargs["extra_headers"] = provider.extra_headers
 
         response = completion(
             model=provider.model,
@@ -71,7 +73,10 @@ class ModelGateway:
                     "- Use `/api/tasks` for list and create.\n"
                     "- Render dashboard, loading state, empty state, and failure banner.\n"
                     "- Request fields: `title`, `status`, `assignee`.\n"
-                    "- Response fields: `id`, `title`, `status`, `assignee`, `updatedAt`."
+                    "- Response fields: `id`, `title`, `status`, `assignee`, `updatedAt`.\n"
+                    "FILE_TARGETS:\n"
+                    "- frontend/dashboard.tsx\n"
+                    "- ui/task_list.tsx"
                 )
             return (
                 "Frontend proposal:\n"
@@ -79,7 +84,10 @@ class ModelGateway:
                 "- Use `/api/task-items` for fetching and creating tasks.\n"
                 "- Request fields: `title`, `status`, `assignee`.\n"
                 "- Response fields: `id`, `title`, `status`, `assignee`, `updatedAt`.\n"
-                "- Include loading, empty, and error states."
+                "- Include loading, empty, and error states.\n"
+                "FILE_TARGETS:\n"
+                "- frontend/dashboard.tsx\n"
+                "- ui/task_list.tsx"
             )
         if role == "backend":
             if "DEFECT:" in prompt:
@@ -88,14 +96,20 @@ class ModelGateway:
                     "- Expose `GET /api/tasks` and `POST /api/tasks`.\n"
                     "- Accept `title`, `status`, `assignee`.\n"
                     "- Return `id`, `title`, `status`, `assignee`, `updatedAt`.\n"
-                    "- Validate missing titles and return explicit error payloads."
+                    "- Validate missing titles and return explicit error payloads.\n"
+                    "FILE_TARGETS:\n"
+                    "- backend/tasks_api.py\n"
+                    "- api/tasks_routes.py"
                 )
             return (
                 "Backend proposal:\n"
                 "- Expose `GET /api/tasks` and `POST /api/tasks`.\n"
                 "- Accept `title`, `status`, `assignee`.\n"
                 "- Return `id`, `title`, `status`, `assignee`, `updatedAt`.\n"
-                "- Validate missing titles and return explicit error payloads."
+                "- Validate missing titles and return explicit error payloads.\n"
+                "FILE_TARGETS:\n"
+                "- backend/tasks_api.py\n"
+                "- api/tasks_routes.py"
             )
         if role == "reviewer":
             if "/api/task-items" in prompt and "GET /api/tasks" in prompt:

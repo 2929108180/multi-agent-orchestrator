@@ -6,9 +6,9 @@ import yaml
 from typer.testing import CliRunner
 
 from mao_cli.main import app
-from mao_cli.core.models import WorkflowEvent
+from mao_cli.core.models import AgentExchange, WorkflowEvent
 from mao_cli.gitops import create_worker_worktrees
-from mao_cli.orchestrator import execute_workflow, parse_review_verdict
+from mao_cli.orchestrator import execute_workflow, parse_review_verdict, _evaluate_ownership
 
 
 def test_status_command() -> None:
@@ -47,6 +47,7 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
     assert payload["verdicts"][0]["defects"][0]["owner"] == "frontend"
     assert payload["plan"]["frontend_task"]["allowed_paths"]
     assert payload["plan"]["backend_task"]["restricted_paths"]
+    assert payload["exchanges"][1]["proposed_paths"]
 
 
 def test_validate_command_fails_when_live_env_missing() -> None:
@@ -177,6 +178,38 @@ def test_execute_workflow_emits_events(tmp_path: Path) -> None:
     assert "backend_started" in event_types
     assert "review_completed" in event_types
     assert event_types[-1] == "workflow_completed"
+
+
+def test_ownership_enforcement_detects_conflicts() -> None:
+    from mao_cli.orchestrator import build_architect_plan
+
+    plan = build_architect_plan("Build a task tracker")
+    frontend_exchange = AgentExchange(
+        role="frontend",
+        model="mock/frontend",
+        prompt="",
+        response="",
+        proposed_paths=["shared-contracts/tasks.schema.json", "frontend/dashboard.tsx"],
+    )
+    backend_exchange = AgentExchange(
+        role="backend",
+        model="mock/backend",
+        prompt="",
+        response="",
+        proposed_paths=["shared-contracts/tasks.schema.json", "backend/tasks_api.py"],
+    )
+
+    defects, notes = _evaluate_ownership(
+        frontend_task=plan.frontend_task,
+        backend_task=plan.backend_task,
+        frontend_exchange=frontend_exchange,
+        backend_exchange=backend_exchange,
+    )
+
+    assert defects
+    assert any(defect.owner == "shared" for defect in defects)
+    assert any("integration" in defect.action.lower() for defect in defects)
+    assert notes
 
 
 def test_chat_history_and_context_with_resumable_session(tmp_path: Path) -> None:

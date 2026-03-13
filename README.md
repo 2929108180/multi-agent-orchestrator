@@ -55,7 +55,21 @@ mao mcp-serve --transport streamable-http --host 127.0.0.1 --port 8000
 - Type `/` and use `Tab` in a real terminal to complete slash commands
 - Use `/help` to see commands and their purpose
 - Use `/status`, `/doctor`, `/mode`, `/history`, `/context`, `/skills`, `/last`, and `/exit` during a session
+- Use `/resume` to choose and restore a saved session from inside chat
 - Use `--resume-latest` or `--session-id <id>` to continue a saved session
+
+## Live Providers
+
+Live mode supports both:
+
+- direct official provider APIs
+- OpenAI-compatible proxies or routed gateways via `base_url`
+
+Provider configuration can reference:
+
+- `api_key_env`
+- `base_url`
+- `extra_headers`
 
 ## Current Building Blocks
 

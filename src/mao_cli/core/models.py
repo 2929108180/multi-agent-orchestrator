@@ -34,6 +34,7 @@ class AgentExchange(BaseModel):
     round_index: int = 0
     prompt: str
     response: str
+    proposed_paths: list[str] = Field(default_factory=list)
 
 
 class ReviewVerdict(BaseModel):
@@ -77,3 +78,4 @@ class WorkflowRun(BaseModel):
     exchanges: list[AgentExchange] = Field(default_factory=list)
     verdicts: list[ReviewVerdict] = Field(default_factory=list)
     workspaces: list[WorkerWorkspaceInfo] = Field(default_factory=list)
+    integration_notes: list[str] = Field(default_factory=list)
