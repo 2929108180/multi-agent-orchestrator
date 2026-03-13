@@ -7,9 +7,15 @@ from pydantic import BaseModel, Field
 
 from mao_cli.config import load_config
 from mao_cli.orchestrator import execute_workflow
+from mao_cli.registry import (
+    find_mcp_record,
+    find_skill_record,
+    load_mcp_registry,
+    registered_or_discovered_skills,
+)
 from mao_cli.sessions import append_session_note, list_sessions, load_session
 from mao_cli.security import ensure_project_path, validate_requirement, validate_run_id
-from mao_cli.skills import append_team_note, discover_skills, read_skill
+from mao_cli.skills import append_team_note
 
 
 class RunListItem(BaseModel):
@@ -132,12 +138,32 @@ def read_saved_session(session_id: str) -> str:
 
 
 def list_available_skills() -> list[SkillListItem]:
-    return [SkillListItem(**entry.model_dump()) for entry in discover_skills(_project_root())]
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    return [
+        SkillListItem(name=entry.name, description=entry.description, path=entry.path)
+        for entry in registered_or_discovered_skills(project_root, runtime_root)
+    ]
 
 
 def read_available_skill(skill_name: str) -> str:
-    entry = read_skill(_project_root(), skill_name)
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    entry = find_skill_record(project_root, runtime_root, skill_name)
     return json.dumps(entry.model_dump(), indent=2)
+
+
+def list_registered_mcp_servers() -> list[dict[str, str | bool]]:
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    return [record.model_dump() for record in load_mcp_registry(project_root, runtime_root)]
+
+
+def read_registered_mcp_server(name: str) -> str:
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    record = find_mcp_record(project_root, runtime_root, name)
+    return json.dumps(record.model_dump(), indent=2)
 
 
 def write_team_note(note: str, category: str = "general") -> str:

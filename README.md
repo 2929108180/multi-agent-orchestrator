@@ -42,6 +42,13 @@ mao run "Build a task tracker with dashboard" --config configs/local.example.yam
 mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock --with-worktrees
 mao chat --mock
 mao chat --mock --with-worktrees
+mao skills import-local
+mao skills list
+mao skills show mcp-builder
+mao mcp import-local
+mao mcp list
+mao mcp show mao_mcp
+mao policy show
 mao mcp-serve --transport stdio
 mao mcp-serve --transport streamable-http --host 127.0.0.1 --port 8000
 ```
@@ -71,6 +78,21 @@ Provider configuration can reference:
 - `api_key_env`
 - `base_url`
 - `extra_headers`
+
+## Capability Registry
+
+Local discovery can be imported into MAO's own registry:
+
+- `mao skills import-local`
+- `mao mcp import-local`
+
+Operational listing and inspection should use the registry:
+
+- `mao skills list`
+- `mao skills show <name>`
+- `mao mcp list`
+- `mao mcp show <server>`
+- `mao policy show`
 
 ## Current Building Blocks
 

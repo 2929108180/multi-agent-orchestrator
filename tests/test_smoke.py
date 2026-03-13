@@ -27,3 +27,27 @@ def test_chat_prefix_command_resolves() -> None:
 
     assert result.exit_code == 0
     assert "config=" in result.stdout
+
+
+def test_registry_commands() -> None:
+    runner = CliRunner()
+
+    imported_skills = runner.invoke(app, ["skills", "import-local"])
+    assert imported_skills.exit_code == 0
+    assert "imported=" in imported_skills.stdout
+
+    listed_skills = runner.invoke(app, ["skills", "list"])
+    assert listed_skills.exit_code == 0
+    assert "Skill Registry" in listed_skills.stdout
+
+    imported_mcp = runner.invoke(app, ["mcp", "import-local"])
+    assert imported_mcp.exit_code == 0
+    assert "Imported MCP Servers" in imported_mcp.stdout
+
+    listed_mcp = runner.invoke(app, ["mcp", "list"])
+    assert listed_mcp.exit_code == 0
+    assert "MCP Registry" in listed_mcp.stdout
+
+    policy = runner.invoke(app, ["policy", "show"])
+    assert policy.exit_code == 0
+    assert "Approval" in policy.stdout

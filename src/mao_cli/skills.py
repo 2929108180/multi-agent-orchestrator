@@ -46,8 +46,8 @@ def read_skill(project_root: Path, skill_name: str) -> SkillEntry:
     raise FileNotFoundError(f"Skill `{skill_name}` not found.")
 
 
-def build_team_context(project_root: Path, limit: int = 5) -> str:
-    skills = discover_skills(project_root)
+def build_team_context(project_root: Path, limit: int = 5, skill_entries: list[SkillEntry] | None = None) -> str:
+    skills = skill_entries if skill_entries is not None else discover_skills(project_root)
     lines = [
         "Team mode capabilities:",
         "- Roles: architect, frontend, backend, reviewer",

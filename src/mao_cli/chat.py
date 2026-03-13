@@ -13,6 +13,7 @@ from mao_cli.core.models import WorkflowEvent
 from mao_cli.gitops import WorkerWorkspace, apply_proposal_to_workspace, ensure_named_worktree
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
+from mao_cli.registry import registered_or_discovered_skills
 from mao_cli.security import validate_requirement
 from mao_cli.sessions import (
     ApprovalQueueItem,
@@ -31,7 +32,6 @@ from mao_cli.sessions import (
     select_approval_item,
     update_approval_item,
 )
-from mao_cli.skills import build_team_context, discover_skills
 from mao_cli.terminal import create_table
 
 try:
@@ -118,8 +118,8 @@ class ChatSession:
         self.console = console
         self.last_run_dir: Path | None = None
         self.prompt_session = None
-        self.skills = discover_skills(project_root)
-        self.team_context = build_team_context(project_root)
+        self.skills = registered_or_discovered_skills(project_root, self.config.runtime_root)
+        self.team_context = self._build_team_context()
         self.session = self._load_or_create_session(session_id=session_id, resume_latest=resume_latest)
         self.last_run_dir = self._derive_last_run_dir()
         self.current_integration_workspace: WorkerWorkspace | None = None
@@ -405,6 +405,18 @@ class ChatSession:
             subtitle="[bold magenta]chat[/bold magenta]",
             padding=(1, 2),
         )
+
+    def _build_team_context(self) -> str:
+        lines = [
+            "Team mode capabilities:",
+            "- Roles: architect, frontend, backend, reviewer",
+            "- MCP tools: project status, run history, summaries, workflow triggers, session notes",
+        ]
+        if self.skills:
+            lines.append("- Available skills:")
+            for entry in self.skills[:5]:
+                lines.append(f"  - {entry.name}: {entry.description}")
+        return "\n".join(lines)
 
     def _load_or_create_session(self, *, session_id: str | None, resume_latest: bool) -> ChatSessionState:
         if session_id:

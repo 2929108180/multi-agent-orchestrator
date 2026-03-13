@@ -7,6 +7,14 @@ import typer
 from mao_cli.chat import ChatSession
 from mao_cli.config import load_config
 from mao_cli.mcp_server import run_mcp_server
+from mao_cli.registry import (
+    find_mcp_record,
+    find_skill_record,
+    import_local_mcp,
+    import_local_skills,
+    load_mcp_registry,
+    load_skill_registry,
+)
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import ensure_project_path, validate_requirement
@@ -17,6 +25,12 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = create_console()
+skills_app = typer.Typer(help="Manage skill registry entries.")
+mcp_app = typer.Typer(help="Manage MCP registry entries.")
+policy_app = typer.Typer(help="Inspect approval and capability policy.")
+app.add_typer(skills_app, name="skills")
+app.add_typer(mcp_app, name="mcp")
+app.add_typer(policy_app, name="policy")
 
 
 def _project_root() -> Path:
@@ -34,6 +48,10 @@ def _resolve_config_path(project_root: Path, config: Path) -> Path:
         raise typer.BadParameter(message) from exc
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+
+def _runtime_root(project_root: Path) -> str:
+    return load_config(project_root / "configs" / "local.example.yaml").runtime_root
 
 
 @app.command()
@@ -289,6 +307,154 @@ def mcp_serve(
     if transport not in {"stdio", "streamable-http"}:
         raise typer.BadParameter("Transport must be `stdio` or `streamable-http`.")
     run_mcp_server(transport=transport, host=host, port=port)
+
+
+@skills_app.command("import-local")
+def skills_import_local() -> None:
+    """Import locally discovered skills into the MAO registry."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    target = import_local_skills(project_root, runtime_root)
+    records = load_skill_registry(project_root, runtime_root)
+    table = create_table("Imported Skills")
+    table.add_column("Name")
+    table.add_column("Source")
+    table.add_column("Description")
+    for record in records:
+        table.add_row(record.name, record.source, record.description)
+    console.print(table)
+    console.print(f"registry={target}")
+    console.print(f"imported={len(records)}")
+
+
+@skills_app.command("list")
+def skills_list() -> None:
+    """List registered skills."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    records = load_skill_registry(project_root, runtime_root)
+    table = create_table("Skill Registry")
+    table.add_column("Name")
+    table.add_column("Enabled")
+    table.add_column("Source")
+    table.add_column("Description")
+    for record in records:
+        table.add_row(record.name, str(record.enabled), record.source, record.description)
+    console.print(table)
+
+
+@skills_app.command("show")
+def skills_show(name: str = typer.Argument(..., help="Skill name.")) -> None:
+    """Show one registered skill."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    record = find_skill_record(project_root, runtime_root, name)
+    console.print(
+        "\n".join(
+            [
+                f"name={record.name}",
+                f"enabled={record.enabled}",
+                f"source={record.source}",
+                f"path={record.path}",
+                f"description={record.description}",
+            ]
+        )
+    )
+
+
+@mcp_app.command("import-local")
+def mcp_import_local() -> None:
+    """Import locally known MCP servers into the MAO registry."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    target = import_local_mcp(project_root, runtime_root)
+    records = load_mcp_registry(project_root, runtime_root)
+    table = create_table("Imported MCP Servers")
+    table.add_column("Server")
+    table.add_column("Transport")
+    table.add_column("Source")
+    table.add_column("Enabled")
+    for record in records:
+        table.add_row(record.name, record.transport, record.source, str(record.enabled))
+    console.print(table)
+    console.print(f"registry={target}")
+    console.print(f"imported={len(records)}")
+
+
+@mcp_app.command("list")
+def mcp_list() -> None:
+    """List registered MCP servers."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    records = load_mcp_registry(project_root, runtime_root)
+    table = create_table("MCP Registry")
+    table.add_column("Server")
+    table.add_column("Transport")
+    table.add_column("Enabled")
+    table.add_column("Source")
+    for record in records:
+        table.add_row(record.name, record.transport, str(record.enabled), record.source)
+    console.print(table)
+
+
+@mcp_app.command("show")
+def mcp_show(name: str = typer.Argument(..., help="MCP server name.")) -> None:
+    """Show one registered MCP server."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    record = find_mcp_record(project_root, runtime_root, name)
+    console.print(
+        "\n".join(
+            [
+                f"name={record.name}",
+                f"transport={record.transport}",
+                f"enabled={record.enabled}",
+                f"source={record.source}",
+                f"command={record.command}",
+                f"args={record.args}",
+                f"url={record.url}",
+                f"tools={len(record.tools)}",
+            ]
+        )
+    )
+
+
+@policy_app.command("show")
+def policy_show(
+    config: Path = typer.Option(
+        Path("configs/live.multi-provider.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file.",
+    )
+) -> None:
+    """Show approval policy from config."""
+    project_root = _project_root()
+    config_path = _resolve_config_path(project_root, config)
+    loaded = load_config(config_path)
+
+    base = create_table("Approval")
+    base.add_column("Key")
+    base.add_column("Value")
+    base.add_row("config", str(config_path))
+    base.add_row("default_mode", loaded.approval.default_mode)
+    base.add_row("shared_path_mode", loaded.approval.shared_path_mode)
+    base.add_row("conflict_mode", loaded.approval.conflict_mode)
+    console.print(base)
+
+    roles = create_table("Role Overrides")
+    roles.add_column("Role")
+    roles.add_column("Mode")
+    for role, rule in loaded.approval.role_overrides.items():
+        roles.add_row(role, rule.mode)
+    console.print(roles)
+
+    providers = create_table("Provider Overrides")
+    providers.add_column("Model")
+    providers.add_column("Mode")
+    for model, rule in loaded.approval.provider_overrides.items():
+        providers.add_row(model, rule.mode)
+    console.print(providers)
 
 
 if __name__ == "__main__":
