@@ -197,3 +197,5 @@ pytest
 - [docs/progress.md](./docs/progress.md)
 - [docs/team-mode.md](./docs/team-mode.md)
 - [docs/architecture-layers.md](./docs/architecture-layers.md)
+- [docs/user-manual.zh-CN.md](./docs/user-manual.zh-CN.md)
+- [docs/test-manual.zh-CN.md](./docs/test-manual.zh-CN.md)

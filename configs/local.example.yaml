@@ -1,19 +1,31 @@
+# Local mock configuration / 本地 mock 配置示例
+# This file is intended for workflow testing without real API keys.
+# 这个文件用于不接真实模型 API 的流程测试。
+
 version: 1
+# Project display name / 项目显示名称
 project_name: multi-agent-orchestrator
+# Runtime working directory / 运行时目录
 runtime_root: runtime
+# Artifact output directory / 产物输出目录
 artifacts_root: artifacts
 workflow:
+  # Maximum reviewer repair rounds / reviewer 最大修复轮次
   max_repair_rounds: 2
 providers:
+  # Mock architect role / mock 架构师角色
   architect:
     adapter: mock
     model: mock/architect
+  # Mock frontend role / mock 前端角色
   frontend:
     adapter: mock
     model: mock/frontend
+  # Mock backend role / mock 后端角色
   backend:
     adapter: mock
     model: mock/backend
+  # Mock reviewer role / mock 审查角色
   reviewer:
     adapter: mock
     model: mock/reviewer

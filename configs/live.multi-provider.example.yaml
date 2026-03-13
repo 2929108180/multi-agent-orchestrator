@@ -1,37 +1,56 @@
+# Live multi-provider configuration / 真实多模型配置示例
+# Fill in your own keys via environment variables before using live mode.
+# 使用 live 模式前，请先通过环境变量填入真实密钥。
+
 version: 1
+# Project display name / 项目显示名称
 project_name: multi-agent-orchestrator
+# Runtime working directory / 运行时目录
 runtime_root: runtime
+# Artifact output directory / 产物输出目录
 artifacts_root: artifacts
 workflow:
+  # Maximum reviewer repair rounds / reviewer 最大修复轮次
   max_repair_rounds: 2
 approval:
+  # Team default approval mode / 团队默认审批模式
   default_mode: manual
+  # Shared file approval mode / 共享文件审批模式
   shared_path_mode: manual
+  # Conflict handling mode / 冲突处理模式
   conflict_mode: reject
   role_overrides:
+    # Reviewer should not directly modify files / reviewer 不直接写文件
     reviewer:
       mode: reject
   provider_overrides:
+    # Example: auto-accept one provider / 示例：对某个模型自动接受
     anthropic/claude-sonnet-4-20250514:
       mode: auto
 providers:
+  # Architect provider / 架构师模型
   architect:
     adapter: openai
     model: openai/gpt-5.4
     api_key_env: OPENAI_API_KEY
+  # Frontend provider / 前端模型
   frontend:
     adapter: gemini
     model: gemini/gemini-2.5-pro
     api_key_env: GEMINI_API_KEY
+  # Backend provider / 后端模型
   backend:
     adapter: anthropic
     model: anthropic/claude-sonnet-4-20250514
     api_key_env: ANTHROPIC_API_KEY
+  # Reviewer provider through gateway / 通过网关接入的审查模型
   reviewer:
     adapter: openrouter
     model: openrouter/openai/gpt-4.1
     api_key_env: OPENROUTER_API_KEY
+    # Gateway URL / 网关 URL
     base_url: https://openrouter.ai/api/v1
+    # Optional gateway headers / 可选网关请求头
     extra_headers:
       HTTP-Referer: https://localhost/mao
       X-Title: multi-agent-orchestrator
