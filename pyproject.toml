@@ -17,6 +17,7 @@ dependencies = [
   "pydantic>=2.11,<3.0",
   "PyYAML>=6.0,<7.0",
   "litellm>=1.65,<2.0",
+  "mcp>=1.17,<2.0",
 ]
 
 [project.optional-dependencies]

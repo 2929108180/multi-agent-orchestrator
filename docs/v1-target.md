@@ -22,6 +22,7 @@ A user can provide a requirement and get:
 - Support mock mode for local development without external keys
 - Validate live provider readiness from config and environment variables
 - Support optional isolated Git worktrees for worker outputs
+- Provide a local MCP server with project and run tools
 - Save each run as `run.json` and `summary.md`
 - Provide visible progress tracking in the repository
 

@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+from mao_cli.config import load_config
+from mao_cli.orchestrator import execute_workflow
+
+
+class RunListItem(BaseModel):
+    run_id: str
+    created_at: str | None = None
+    approved: bool | None = None
+    summary: str = ""
+    path: str
+
+
+class WorkflowTriggerResult(BaseModel):
+    run_id: str
+    run_dir: str
+    summary_path: str
+    approved: bool | None = None
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def project_status_text() -> str:
+    progress_path = _project_root() / "docs" / "progress.md"
+    return progress_path.read_text(encoding="utf-8")
+
+
+def read_project_doc(doc_name: str) -> str:
+    allowed_docs = {
+        "architecture-baseline": "architecture-baseline.md",
+        "progress": "progress.md",
+        "technical-design-v1": "technical-design-v1.md",
+        "v1-target": "v1-target.md",
+    }
+    if doc_name not in allowed_docs:
+        names = ", ".join(sorted(allowed_docs))
+        raise ValueError(f"Unsupported document `{doc_name}`. Allowed values: {names}")
+    doc_path = _project_root() / "docs" / allowed_docs[doc_name]
+    return doc_path.read_text(encoding="utf-8")
+
+
+def list_runs(limit: int = 10) -> list[RunListItem]:
+    runs_root = _project_root() / "artifacts" / "runs"
+    if not runs_root.exists():
+        return []
+
+    items: list[RunListItem] = []
+    for run_dir in sorted(
+        [item for item in runs_root.iterdir() if item.is_dir()],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    )[:limit]:
+        run_json = run_dir / "run.json"
+        summary = run_dir / "summary.md"
+        created_at = None
+        approved = None
+        summary_text = ""
+        if run_json.exists():
+            payload = json.loads(run_json.read_text(encoding="utf-8"))
+            created_at = payload.get("created_at")
+            verdicts = payload.get("verdicts") or []
+            if verdicts:
+                approved = verdicts[-1].get("approved")
+        if summary.exists():
+            summary_text = summary.read_text(encoding="utf-8").splitlines()[0]
+
+        items.append(
+            RunListItem(
+                run_id=run_dir.name,
+                created_at=created_at,
+                approved=approved,
+                summary=summary_text,
+                path=str(run_dir),
+            )
+        )
+    return items
+
+
+def read_run_summary(run_id: str) -> str:
+    summary_path = _project_root() / "artifacts" / "runs" / run_id / "summary.md"
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Run summary not found for `{run_id}`.")
+    return summary_path.read_text(encoding="utf-8")
+
+
+def trigger_mock_workflow(
+    requirement: str,
+    config_path: str = "configs/local.example.yaml",
+    with_worktrees: bool = False,
+) -> WorkflowTriggerResult:
+    project_root = _project_root()
+    absolute_config = Path(config_path)
+    if not absolute_config.is_absolute():
+        absolute_config = project_root / absolute_config
+    config = load_config(absolute_config)
+    output_dir = project_root / config.artifacts_root / "runs"
+    run_dir = execute_workflow(
+        requirement=requirement,
+        config=config,
+        output_dir=output_dir,
+        repository_root=project_root,
+        force_mock=True,
+        with_worktrees=with_worktrees,
+    )
+    payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+    verdicts = payload.get("verdicts") or []
+    approved = verdicts[-1].get("approved") if verdicts else None
+    return WorkflowTriggerResult(
+        run_id=payload["run_id"],
+        run_dir=str(run_dir),
+        summary_path=str(run_dir / "summary.md"),
+        approved=approved,
+    )

@@ -17,7 +17,7 @@
 - [x] Add mock-mode multi-agent workflow
 - [x] Add live multi-provider key validation helpers
 - [x] Add Git worktree integration
-- [ ] Add MCP tool integration
+- [x] Add MCP tool integration
 - [ ] Add structured review-to-repair routing
 - [ ] Add persistent run index and search
 

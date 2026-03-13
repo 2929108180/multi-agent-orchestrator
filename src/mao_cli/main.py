@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.table import Table
 
 from mao_cli.config import load_config
+from mao_cli.mcp_server import run_mcp_server
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 
@@ -186,6 +187,32 @@ def run(
         with_worktrees=with_worktrees,
     )
     console.print(f"Run artifacts saved to: {run_dir}")
+
+
+@app.command("mcp-serve")
+def mcp_serve(
+    transport: str = typer.Option(
+        "stdio",
+        "--transport",
+        help="MCP transport: stdio or streamable-http.",
+    ),
+    host: str = typer.Option(
+        "127.0.0.1",
+        "--host",
+        help="Host for streamable-http transport.",
+    ),
+    port: int = typer.Option(
+        8000,
+        "--port",
+        min=1,
+        max=65535,
+        help="Port for streamable-http transport.",
+    ),
+) -> None:
+    """Run the local MCP server for project tools and workflow execution."""
+    if transport not in {"stdio", "streamable-http"}:
+        raise typer.BadParameter("Transport must be `stdio` or `streamable-http`.")
+    run_mcp_server(transport=transport, host=host, port=port)
 
 
 if __name__ == "__main__":
