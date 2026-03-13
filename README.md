@@ -27,6 +27,7 @@ Version 1 focuses on a local CLI workflow:
 - `docs/architecture-baseline.md`: fixed architecture and iteration rules
 - `docs/v1-target.md`: version 1 goal and acceptance criteria
 - `docs/progress.md`: visible delivery checklist
+- `docs/team-mode.md`: current team roles, skill support, and guardrails
 
 ## Useful Commands
 
@@ -53,7 +54,8 @@ mao mcp-serve --transport streamable-http --host 127.0.0.1 --port 8000
 - Watch workflow stage updates in real time during chat execution
 - Type `/` and use `Tab` in a real terminal to complete slash commands
 - Use `/help` to see commands and their purpose
-- Use `/status`, `/doctor`, `/last`, and `/exit` during a session
+- Use `/status`, `/doctor`, `/mode`, `/history`, `/context`, `/skills`, `/last`, and `/exit` during a session
+- Use `--resume-latest` or `--session-id <id>` to continue a saved session
 
 ## Current Building Blocks
 

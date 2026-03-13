@@ -19,6 +19,11 @@
 - [x] Add Git worktree integration
 - [x] Add MCP tool integration
 - [x] Add structured review-to-repair routing
+- [x] Add chat session memory and resume
+- [x] Add live chat preflight
+- [x] Add local skill discovery for team mode
+- [x] Add safe MCP write tools for team notes and session notes
+- [x] Add worker ownership metadata to reduce write conflicts
 - [ ] Add persistent run index and search
 
 ## Security Baseline
@@ -32,4 +37,4 @@
 
 The current implementation target is:
 
-`requirement -> plan -> frontend/backend responses -> reviewer verdict -> local artifacts`
+`chat session -> contextual workflow -> reviewer repair loop -> saved sessions and team tools`

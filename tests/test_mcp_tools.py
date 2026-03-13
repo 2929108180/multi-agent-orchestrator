@@ -1,4 +1,12 @@
-from mao_cli.mcp_tools import list_runs, project_status_text, read_project_doc, trigger_mock_workflow
+from mao_cli.mcp_tools import (
+    list_available_skills,
+    list_runs,
+    list_saved_sessions,
+    project_status_text,
+    read_project_doc,
+    trigger_mock_workflow,
+    write_team_note,
+)
 from mao_cli.security import validate_run_id
 
 
@@ -31,3 +39,18 @@ def test_validate_run_id_rejects_path_traversal() -> None:
         assert "Invalid run id" in str(exc)
     else:
         raise AssertionError("Expected ValueError for invalid run id")
+
+
+def test_list_saved_sessions() -> None:
+    sessions = list_saved_sessions(limit=5)
+    assert isinstance(sessions, list)
+
+
+def test_list_available_skills() -> None:
+    skills = list_available_skills()
+    assert isinstance(skills, list)
+
+
+def test_write_team_note() -> None:
+    path = write_team_note("test note from pytest", category="pytest")
+    assert path.endswith("pytest.md")

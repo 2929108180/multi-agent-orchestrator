@@ -13,6 +13,16 @@ from mao_cli.core.models import WorkflowEvent
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import validate_requirement
+from mao_cli.sessions import (
+    ChatSessionState,
+    append_turn,
+    build_conversation_context,
+    clear_turns,
+    create_session,
+    load_latest_session,
+    load_session,
+)
+from mao_cli.skills import build_team_context, discover_skills
 from mao_cli.terminal import create_table
 
 try:
@@ -35,6 +45,11 @@ CHAT_COMMANDS = {
     "/help": "Show built-in commands and how chat mode works.",
     "/status": "Show the current chat session settings.",
     "/doctor": "Show provider readiness for this chat session.",
+    "/mode": "Show whether the session is using mock or live providers.",
+    "/history": "Show the saved turns for this session.",
+    "/context": "Show the conversation context sent into new runs.",
+    "/clear": "Clear the saved turns in the current session.",
+    "/skills": "List available local skills for team mode.",
     "/last": "Show the latest run directory from this session.",
     "/exit": "Exit the chat session.",
     "/quit": "Exit the chat session.",
@@ -74,6 +89,8 @@ class ChatSession:
         output_dir: Path | None,
         mock: bool,
         with_worktrees: bool,
+        session_id: str | None,
+        resume_latest: bool,
         console: Console,
     ) -> None:
         self.project_root = project_root
@@ -85,18 +102,29 @@ class ChatSession:
         self.console = console
         self.last_run_dir: Path | None = None
         self.prompt_session = None
+        self.skills = discover_skills(project_root)
+        self.team_context = build_team_context(project_root)
+        self.session = self._load_or_create_session(session_id=session_id, resume_latest=resume_latest)
+        self._preflight_live_mode()
 
     def print_welcome(self) -> None:
         self.console.print(self._build_banner())
         self.console.print("[bold white]Multi-Agent Orchestrator chat[/bold white]")
         self.console.print("[cyan]Type a requirement to run the workflow.[/cyan]")
+        self.console.print(
+            f"[white]session={self.session.session_id}[/white] "
+            f"[green]mode={'mock' if self.mock else 'live'}[/green] "
+            f"[magenta]skills={len(self.skills)}[/magenta]"
+        )
         if self._interactive_completion_available():
             self.console.print("[green]Type `/` to see commands. Use `Tab` to complete slash commands.[/green]")
         else:
             self.console.print(
                 "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]"
             )
-        self.console.print("[magenta]Built-in commands:[/magenta] /help /status /doctor /last /exit")
+        self.console.print(
+            "[magenta]Built-in commands:[/magenta] /help /status /doctor /mode /history /context /skills /last /exit"
+        )
 
     def run(self) -> None:
         self.print_welcome()
@@ -163,14 +191,19 @@ class ChatSession:
             self.console.print(
                 "\n".join(
                     [
+                        f"session_id={self.session.session_id}",
                         f"config={self.config_path}",
                         f"mock={self.mock}",
                         f"with_worktrees={self.with_worktrees}",
                         f"output_dir={self.output_dir}",
                         f"last_run={self.last_run_dir or '-'}",
+                        f"turns={len(self.session.turns)}",
                     ]
                 )
             )
+            return False
+        if command == "/mode":
+            self.console.print(f"mode={'mock' if self.mock else 'live'}")
             return False
         if command == "/doctor":
             rows = inspect_providers(self.config, force_mock=self.mock)
@@ -178,6 +211,21 @@ class ChatSession:
                 self.console.print(
                     f"[{row.role}] adapter={row.adapter} model={row.model} ready={row.ready} note={row.note}"
                 )
+            return False
+        if command == "/history":
+            self._print_history()
+            return False
+        if command == "/context":
+            context = build_conversation_context(self.session)
+            self.console.print(context or "No conversation context yet.")
+            return False
+        if command == "/clear":
+            self.session = clear_turns(self.project_root, self.config.runtime_root, self.session)
+            self.last_run_dir = None
+            self.console.print("Session turns cleared.")
+            return False
+        if command == "/skills":
+            self._print_skills()
             return False
         if command == "/last":
             if self.last_run_dir is None:
@@ -197,6 +245,7 @@ class ChatSession:
             return
 
         self.console.print("Running workflow...")
+        conversation_context = build_conversation_context(self.session)
         run_dir = execute_workflow(
             requirement=requirement,
             config=self.config,
@@ -205,6 +254,8 @@ class ChatSession:
             force_mock=self.mock,
             with_worktrees=self.with_worktrees,
             event_handler=self._handle_workflow_event,
+            conversation_context=conversation_context,
+            team_context=self.team_context,
         )
         self.last_run_dir = run_dir
 
@@ -212,6 +263,18 @@ class ChatSession:
         verdicts = payload.get("verdicts") or []
         approved = verdicts[-1].get("approved") if verdicts else None
         summary = verdicts[-1].get("summary") if verdicts else "No verdict summary."
+        defects = [defect.get("summary", "") for defect in verdicts[-1].get("defects", [])] if verdicts else []
+        self.session = append_turn(
+            self.project_root,
+            self.config.runtime_root,
+            self.session,
+            user_input=requirement,
+            run_id=payload.get("run_id", ""),
+            run_dir=run_dir,
+            approved=approved,
+            summary=summary,
+            defects=defects,
+        )
 
         self.console.print(f"Run artifacts saved to: {run_dir}")
         self.console.print(f"approved={approved}")
@@ -285,3 +348,50 @@ class ChatSession:
             subtitle="[bold magenta]chat[/bold magenta]",
             padding=(1, 2),
         )
+
+    def _load_or_create_session(self, *, session_id: str | None, resume_latest: bool) -> ChatSessionState:
+        if session_id:
+            return load_session(self.project_root, self.config.runtime_root, session_id)
+        if resume_latest:
+            latest = load_latest_session(self.project_root, self.config.runtime_root)
+            if latest is not None:
+                return latest
+        return create_session(
+            project_root=self.project_root,
+            runtime_root=self.config.runtime_root,
+            config_path=self.config_path,
+            mode="mock" if self.mock else "live",
+            with_worktrees=self.with_worktrees,
+        )
+
+    def _preflight_live_mode(self) -> None:
+        if self.mock:
+            return
+        rows = inspect_providers(self.config, force_mock=False)
+        not_ready = [row for row in rows if not row.ready]
+        if not_ready:
+            message = "; ".join(f"{row.role}: {row.note}" for row in not_ready)
+            raise RuntimeError(f"Live mode preflight failed. {message}")
+
+    def _print_history(self) -> None:
+        if not self.session.turns:
+            self.console.print("No saved turns in this session yet.")
+            return
+        table = create_table("Session History")
+        table.add_column("Turn")
+        table.add_column("Approved")
+        table.add_column("Summary")
+        for turn in self.session.turns[-10:]:
+            table.add_row(turn.turn_id, str(turn.approved), turn.summary)
+        self.console.print(table)
+
+    def _print_skills(self) -> None:
+        if not self.skills:
+            self.console.print("No local skills discovered.")
+            return
+        table = create_table("Available Skills")
+        table.add_column("Name")
+        table.add_column("Description")
+        for skill in self.skills[:20]:
+            table.add_row(skill.name, skill.description)
+        self.console.print(table)

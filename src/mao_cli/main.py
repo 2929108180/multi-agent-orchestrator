@@ -126,10 +126,13 @@ def status() -> None:
     table.add_row("Config models", "implemented")
     table.add_row("Mock multi-agent flow", "implemented")
     table.add_row("Live provider helpers", "implemented")
+    table.add_row("Live chat preflight", "implemented")
     table.add_row("MCP integration", "implemented")
     table.add_row("Git worktree flow", "implemented")
     table.add_row("Structured repair routing", "implemented")
     table.add_row("Security baseline", "implemented")
+    table.add_row("Session memory", "implemented")
+    table.add_row("Team mode skills", "implemented")
     console.print(table)
 
 
@@ -232,18 +235,33 @@ def chat(
         "--with-worktrees",
         help="Create isolated git worktrees for frontend and backend outputs.",
     ),
+    session_id: str | None = typer.Option(
+        None,
+        "--session-id",
+        help="Resume a specific saved chat session by id.",
+    ),
+    resume_latest: bool = typer.Option(
+        False,
+        "--resume-latest",
+        help="Resume the most recently saved chat session.",
+    ),
 ) -> None:
     """Start an interactive local chat session over the current workflow."""
     project_root = _project_root()
     config_path = _resolve_config_path(project_root, config)
-    session = ChatSession(
-        project_root=project_root,
-        config_path=config_path,
-        output_dir=output_dir,
-        mock=mock,
-        with_worktrees=with_worktrees,
-        console=console,
-    )
+    try:
+        session = ChatSession(
+            project_root=project_root,
+            config_path=config_path,
+            output_dir=output_dir,
+            mock=mock,
+            with_worktrees=with_worktrees,
+            session_id=session_id,
+            resume_latest=resume_latest,
+            console=console,
+        )
+    except RuntimeError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     session.run()
 
 

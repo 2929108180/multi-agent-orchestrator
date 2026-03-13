@@ -50,6 +50,18 @@ def build_architect_plan(requirement: str) -> ArchitectPlan:
                 "References backend contract fields",
                 "Explains loading and error handling",
             ],
+            allowed_paths=[
+                "frontend/**",
+                "ui/**",
+                "src/frontend/**",
+                "web/**",
+            ],
+            restricted_paths=[
+                "backend/**",
+                "api/**",
+                "db/**",
+                "shared-contracts/**",
+            ],
         ),
         backend_task=WorkerTask(
             role="backend",
@@ -64,13 +76,25 @@ def build_architect_plan(requirement: str) -> ArchitectPlan:
                 "Defines request and response fields",
                 "Covers validation and error paths",
             ],
+            allowed_paths=[
+                "backend/**",
+                "api/**",
+                "db/**",
+                "src/backend/**",
+            ],
+            restricted_paths=[
+                "frontend/**",
+                "ui/**",
+                "web/**",
+                "shared-contracts/**",
+            ],
         ),
         review_focus=review_focus,
     )
 
 
 def _render_worker_prompt(plan: ArchitectPlan, task: WorkerTask) -> str:
-    return "\n".join(
+    return _render_prompt_sections(
         [
             f"Role: {task.role}",
             f"Objective: {task.objective}",
@@ -80,6 +104,11 @@ def _render_worker_prompt(plan: ArchitectPlan, task: WorkerTask) -> str:
             *[f"- {item}" for item in task.deliverables],
             "Acceptance criteria:",
             *[f"- {item}" for item in task.acceptance_criteria],
+            "Allowed paths:",
+            *[f"- {item}" for item in task.allowed_paths],
+            "Restricted paths:",
+            *[f"- {item}" for item in task.restricted_paths],
+            "Do not change files outside your owned paths. Shared contract changes must be escalated to integration.",
             "Respond with a concise but concrete implementation proposal.",
         ]
     )
@@ -90,13 +119,21 @@ def _render_review_prompt(
     plan: ArchitectPlan,
     frontend_response: str,
     backend_response: str,
+    conversation_context: str = "",
+    team_context: str = "",
 ) -> str:
     focus = "\n".join(f"- {item}" for item in plan.review_focus)
     contract = "\n".join(f"- {item}" for item in plan.shared_contract)
-    return "\n".join(
+    sections = [
+        "You are the reviewer.",
+        f"Requirement: {requirement}",
+    ]
+    if conversation_context:
+        sections.extend(["Conversation context:", conversation_context])
+    if team_context:
+        sections.extend(["Team context:", team_context])
+    sections.extend(
         [
-            "You are the reviewer.",
-            f"Requirement: {requirement}",
             "Shared contract:",
             contract,
             "Review focus:",
@@ -117,6 +154,7 @@ def _render_review_prompt(
             "ACTION: one concrete action",
         ]
     )
+    return _render_prompt_sections(sections)
 
 
 def parse_review_verdict(review_response: str) -> ReviewVerdict:
@@ -262,6 +300,8 @@ def execute_workflow(
     force_mock: bool = False,
     with_worktrees: bool = False,
     event_handler: Callable[[WorkflowEvent], None] | None = None,
+    conversation_context: str = "",
+    team_context: str = "",
 ) -> Path:
     requirement = validate_requirement(requirement)
     gateway = ModelGateway(config=config, force_mock=force_mock)
@@ -295,13 +335,16 @@ def execute_workflow(
             role=role, model=provider.model, prompt=prompt, response=response, round_index=round_index
         )
 
-    architect_prompt = "\n".join(
-        [
-            "You are the architect.",
-            f"Requirement: {requirement}",
-            "Summarize the delivery slice and critical interface assumptions.",
-        ]
-    )
+    architect_sections = [
+        "You are the architect.",
+        f"Requirement: {requirement}",
+    ]
+    if conversation_context:
+        architect_sections.extend(["Conversation context:", conversation_context])
+    if team_context:
+        architect_sections.extend(["Team context:", team_context])
+    architect_sections.append("Summarize the delivery slice and critical interface assumptions.")
+    architect_prompt = _render_prompt_sections(architect_sections)
     _emit_event(event_handler, "architect_started", role="architect", run_id=run.run_id, message="planning")
     architect_exchange = _call("architect", architect_prompt)
     run.exchanges.append(architect_exchange)
@@ -309,6 +352,15 @@ def execute_workflow(
 
     frontend_prompt = _render_worker_prompt(plan, plan.frontend_task)
     backend_prompt = _render_worker_prompt(plan, plan.backend_task)
+    if conversation_context or team_context:
+        context_sections: list[str] = []
+        if conversation_context:
+            context_sections.extend(["Conversation context:", conversation_context])
+        if team_context:
+            context_sections.extend(["Team context:", team_context])
+        context_block = _render_prompt_sections(context_sections)
+        frontend_prompt = frontend_prompt + "\n\n" + context_block
+        backend_prompt = backend_prompt + "\n\n" + context_block
     _emit_event(event_handler, "frontend_started", role="frontend", run_id=run.run_id, message="running")
     _emit_event(event_handler, "backend_started", role="backend", run_id=run.run_id, message="running")
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -327,6 +379,8 @@ def execute_workflow(
         plan=plan,
         frontend_response=frontend_exchange.response,
         backend_response=backend_exchange.response,
+        conversation_context=conversation_context,
+        team_context=team_context,
     )
     _emit_event(event_handler, "review_started", role="reviewer", run_id=run.run_id, message="checking")
     review_exchange = _call("reviewer", review_prompt, 0)
@@ -419,6 +473,8 @@ def execute_workflow(
             plan=plan,
             frontend_response=current_frontend_exchange.response,
             backend_response=current_backend_exchange.response,
+            conversation_context=conversation_context,
+            team_context=team_context,
         )
         _emit_event(
             event_handler,
@@ -557,7 +613,7 @@ def _render_repair_prompt(task_prompt: str, defects: list[ReviewDefect]) -> str:
                 f"ACTION: {defect.action}",
             ]
         )
-    return "\n".join(
+    return _render_prompt_sections(
         [
             task_prompt,
             "",
@@ -566,6 +622,10 @@ def _render_repair_prompt(task_prompt: str, defects: list[ReviewDefect]) -> str:
             "Revise your proposal and keep it consistent with the shared contract.",
         ]
     )
+
+
+def _render_prompt_sections(parts: list[str]) -> str:
+    return "\n".join(part for part in parts if part)
 
 
 def _emit_event(

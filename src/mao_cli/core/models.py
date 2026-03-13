@@ -16,6 +16,8 @@ class WorkerTask(BaseModel):
     objective: str
     deliverables: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
+    allowed_paths: list[str] = Field(default_factory=list)
+    restricted_paths: list[str] = Field(default_factory=list)
 
 
 class ArchitectPlan(BaseModel):

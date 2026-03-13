@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 from mao_cli.config import load_config
 from mao_cli.orchestrator import execute_workflow
+from mao_cli.sessions import append_session_note, list_sessions, load_session
 from mao_cli.security import ensure_project_path, validate_requirement, validate_run_id
+from mao_cli.skills import append_team_note, discover_skills, read_skill
 
 
 class RunListItem(BaseModel):
@@ -23,6 +25,19 @@ class WorkflowTriggerResult(BaseModel):
     run_dir: str
     summary_path: str
     approved: bool | None = None
+
+
+class SessionListItem(BaseModel):
+    session_id: str
+    updated_at: str
+    mode: str
+    turns: int
+
+
+class SkillListItem(BaseModel):
+    name: str
+    description: str
+    path: str
 
 
 def _project_root() -> Path:
@@ -92,6 +107,51 @@ def read_run_summary(run_id: str) -> str:
     if not summary_path.exists():
         raise FileNotFoundError(f"Run summary not found for `{safe_run_id}`.")
     return summary_path.read_text(encoding="utf-8")
+
+
+def list_saved_sessions(limit: int = 10) -> list[SessionListItem]:
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    sessions = list_sessions(project_root, runtime_root, limit=limit)
+    return [
+        SessionListItem(
+            session_id=session.session_id,
+            updated_at=session.updated_at.isoformat(),
+            mode=session.mode,
+            turns=len(session.turns),
+        )
+        for session in sessions
+    ]
+
+
+def read_saved_session(session_id: str) -> str:
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    session = load_session(project_root, runtime_root, session_id)
+    return json.dumps(session.model_dump(mode="json"), indent=2)
+
+
+def list_available_skills() -> list[SkillListItem]:
+    return [SkillListItem(**entry.model_dump()) for entry in discover_skills(_project_root())]
+
+
+def read_available_skill(skill_name: str) -> str:
+    entry = read_skill(_project_root(), skill_name)
+    return json.dumps(entry.model_dump(), indent=2)
+
+
+def write_team_note(note: str, category: str = "general") -> str:
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    path = append_team_note(project_root, runtime_root, note, category=category)
+    return str(path)
+
+
+def write_session_note(session_id: str, note: str) -> str:
+    project_root = _project_root()
+    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    path = append_session_note(project_root, runtime_root, session_id, note)
+    return str(path)
 
 
 def trigger_mock_workflow(

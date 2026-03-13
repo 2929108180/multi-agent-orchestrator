@@ -5,11 +5,17 @@ from pydantic import BaseModel, ConfigDict, Field
 from mcp.server.fastmcp import FastMCP
 
 from mao_cli.mcp_tools import (
+    list_available_skills,
     list_runs,
+    list_saved_sessions,
     project_status_text,
+    read_available_skill,
     read_project_doc,
     read_run_summary,
+    read_saved_session,
     trigger_mock_workflow,
+    write_session_note,
+    write_team_note,
 )
 
 mcp = FastMCP("mao_mcp", json_response=True)
@@ -49,6 +55,38 @@ class TriggerWorkflowInput(BaseModel):
         default=False,
         description="When true, create isolated frontend/backend git worktrees for the run.",
     )
+
+
+class SessionListInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=10, ge=1, le=20, description="Maximum number of saved sessions to return.")
+
+
+class SessionInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    session_id: str = Field(..., min_length=4, description="Saved session identifier.")
+
+
+class SkillInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    skill_name: str = Field(..., min_length=1, description="Skill name to read.")
+
+
+class TeamNoteInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    note: str = Field(..., min_length=1, description="Team note content to append under runtime/team.")
+    category: str = Field(default="general", min_length=1, description="Category name for the team note file.")
+
+
+class SessionNoteInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    session_id: str = Field(..., min_length=4, description="Saved session identifier.")
+    note: str = Field(..., min_length=1, description="Note content to append to the saved session.")
 
 
 @mcp.tool(
@@ -112,6 +150,66 @@ def mao_read_run_summary(params: RunSummaryInput) -> str:
 
 
 @mcp.tool(
+    name="mao_list_sessions",
+    annotations={
+        "title": "List Saved Sessions",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def mao_list_sessions(params: SessionListInput) -> list[dict[str, str | int]]:
+    """List saved local chat sessions."""
+    return [item.model_dump() for item in list_saved_sessions(limit=params.limit)]
+
+
+@mcp.tool(
+    name="mao_read_session",
+    annotations={
+        "title": "Read Saved Session",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def mao_read_session(params: SessionInput) -> str:
+    """Read one saved local chat session as JSON."""
+    return read_saved_session(params.session_id)
+
+
+@mcp.tool(
+    name="mao_list_skills",
+    annotations={
+        "title": "List Available Skills",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def mao_list_skills() -> list[dict[str, str]]:
+    """List discovered local skills available for team mode."""
+    return [item.model_dump() for item in list_available_skills()]
+
+
+@mcp.tool(
+    name="mao_read_skill",
+    annotations={
+        "title": "Read Skill Entry",
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+)
+def mao_read_skill(params: SkillInput) -> str:
+    """Read a single discovered skill entry."""
+    return read_available_skill(params.skill_name)
+
+
+@mcp.tool(
     name="mao_trigger_mock_workflow",
     annotations={
         "title": "Trigger Mock Workflow",
@@ -129,6 +227,36 @@ def mao_trigger_mock_workflow(params: TriggerWorkflowInput) -> dict[str, str | b
         with_worktrees=params.with_worktrees,
     )
     return result.model_dump()
+
+
+@mcp.tool(
+    name="mao_write_team_note",
+    annotations={
+        "title": "Append Team Note",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+def mao_write_team_note(params: TeamNoteInput) -> str:
+    """Append a safe team note under runtime/team for local coordination."""
+    return write_team_note(params.note, category=params.category)
+
+
+@mcp.tool(
+    name="mao_write_session_note",
+    annotations={
+        "title": "Append Session Note",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+def mao_write_session_note(params: SessionNoteInput) -> str:
+    """Append a note to a saved local chat session."""
+    return write_session_note(params.session_id, params.note)
 
 
 def run_mcp_server(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:

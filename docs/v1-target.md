@@ -23,6 +23,8 @@ A user can provide a requirement and get:
 - Validate live provider readiness from config and environment variables
 - Support optional isolated Git worktrees for worker outputs
 - Provide a local MCP server with project and run tools
+- Support saved chat sessions and session resume
+- Expose team-mode skills and safe coordination writes
 - Save each run as `run.json` and `summary.md`
 - Provide visible progress tracking in the repository
 

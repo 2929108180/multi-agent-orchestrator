@@ -50,4 +50,5 @@ def bounded_text(value: str, *, limit: int = MAX_DEFECT_TEXT_LENGTH) -> str:
 
 
 def sanitize_text(value: str) -> str:
-    return value.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+    cleaned = value.lstrip("\ufeff")
+    return cleaned.encode("utf-8", errors="replace").decode("utf-8", errors="replace")

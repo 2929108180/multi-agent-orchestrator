@@ -2,6 +2,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import yaml
 from typer.testing import CliRunner
 
 from mao_cli.main import app
@@ -44,6 +45,8 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
     assert summary.exists()
     assert payload["verdicts"][-1]["approved"] is True
     assert payload["verdicts"][0]["defects"][0]["owner"] == "frontend"
+    assert payload["plan"]["frontend_task"]["allowed_paths"]
+    assert payload["plan"]["backend_task"]["restricted_paths"]
 
 
 def test_validate_command_fails_when_live_env_missing() -> None:
@@ -174,3 +177,68 @@ def test_execute_workflow_emits_events(tmp_path: Path) -> None:
     assert "backend_started" in event_types
     assert "review_completed" in event_types
     assert event_types[-1] == "workflow_completed"
+
+
+def test_chat_history_and_context_with_resumable_session(tmp_path: Path) -> None:
+    config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-chat-config.yaml")
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "project_name": "multi-agent-orchestrator",
+                "runtime_root": str((tmp_path / "runtime").resolve()),
+                "artifacts_root": str((tmp_path / "artifacts").resolve()),
+                "workflow": {"max_repair_rounds": 1},
+                "providers": {
+                    "architect": {"adapter": "mock", "model": "mock/architect"},
+                    "frontend": {"adapter": "mock", "model": "mock/frontend"},
+                    "backend": {"adapter": "mock", "model": "mock/backend"},
+                    "reviewer": {"adapter": "mock", "model": "mock/reviewer"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--mock", "--config", str(config_path)],
+        input="Build a task tracker\n/history\n/context\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Session History" in result.stdout
+    assert "Conversation context from recent turns:" in result.stdout
+
+
+def test_chat_live_preflight_fails_cleanly(tmp_path: Path) -> None:
+    config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-live-config.yaml")
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "project_name": "multi-agent-orchestrator",
+                "runtime_root": str((tmp_path / "runtime").resolve()),
+                "artifacts_root": str((tmp_path / "artifacts").resolve()),
+                "workflow": {"max_repair_rounds": 1},
+                "providers": {
+                    "architect": {"adapter": "openai", "model": "openai/gpt-5.4", "api_key_env": "OPENAI_API_KEY"},
+                    "frontend": {"adapter": "gemini", "model": "gemini/gemini-2.5-pro", "api_key_env": "GEMINI_API_KEY"},
+                    "backend": {"adapter": "anthropic", "model": "anthropic/claude-sonnet-4-20250514", "api_key_env": "ANTHROPIC_API_KEY"},
+                    "reviewer": {"adapter": "openrouter", "model": "openrouter/openai/gpt-4.1", "api_key_env": "OPENROUTER_API_KEY"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--live", "--config", str(config_path)],
+        input="/exit\n",
+    )
+
+    assert result.exit_code != 0
+    assert "Live mode preflight failed." in result.output
