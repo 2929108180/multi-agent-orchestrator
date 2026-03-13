@@ -5,13 +5,13 @@ import sys
 from pathlib import Path
 
 from rich.console import Console
-from rich.table import Table
 
 from mao_cli.config import AppConfig, load_config
 from mao_cli.core.models import WorkflowEvent
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import validate_requirement
+from mao_cli.terminal import create_table
 
 try:
     from prompt_toolkit import PromptSession
@@ -133,12 +133,12 @@ class ChatSession:
         return "Enter a requirement, or type `/` and press Tab for commands."
 
     def _handle_command(self, line: str) -> bool:
-        command = line.lower()
+        command = self._resolve_command(line.lower())
         if command in {"/exit", "/quit"}:
             self.console.print("Chat closed.")
             return True
         if command == "/help":
-            table = Table(title="Chat Commands")
+            table = create_table("Chat Commands")
             table.add_column("Command")
             table.add_column("Purpose")
             for name, purpose in CHAT_COMMANDS.items():
@@ -249,3 +249,11 @@ class ChatSession:
         if event.event_type == "workflow_completed":
             return "workflow: completed"
         return ""
+
+    def _resolve_command(self, command: str) -> str:
+        if command in CHAT_COMMANDS:
+            return command
+        matches = [name for name in CHAT_COMMANDS if name.startswith(command)]
+        if len(matches) == 1:
+            return matches[0]
+        return command

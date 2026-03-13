@@ -19,3 +19,11 @@ def test_chat_exit_command() -> None:
 
     assert result.exit_code == 0
     assert "Chat closed." in result.stdout
+
+
+def test_chat_prefix_command_resolves() -> None:
+    runner = CliRunner()
+    result = runner.invoke(app, ["chat", "--mock"], input="/sta\n/exit\n")
+
+    assert result.exit_code == 0
+    assert "config=" in result.stdout

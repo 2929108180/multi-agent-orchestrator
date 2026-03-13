@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
-from rich.console import Console
-from rich.table import Table
 
 from mao_cli.chat import ChatSession
 from mao_cli.config import load_config
@@ -12,12 +10,13 @@ from mao_cli.mcp_server import run_mcp_server
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import ensure_project_path, validate_requirement
+from mao_cli.terminal import create_console, create_table
 
 app = typer.Typer(
     help="CLI for orchestrating cross-vendor coding agents.",
     no_args_is_help=True,
 )
-console = Console()
+console = create_console()
 
 
 def _project_root() -> Path:
@@ -59,7 +58,7 @@ def doctor(
     loaded = load_config(config_path)
     provider_health = inspect_providers(config=loaded, force_mock=mock)
 
-    table = Table(title="Environment")
+    table = create_table("Environment")
     table.add_column("Item")
     table.add_column("Value")
     table.add_row("Project root", str(project_root))
@@ -69,7 +68,7 @@ def doctor(
     table.add_row("Status", "ready for local development")
     console.print(table)
 
-    provider_table = Table(title="Providers")
+    provider_table = create_table("Providers")
     provider_table.add_column("Role")
     provider_table.add_column("Adapter")
     provider_table.add_column("Mode")
@@ -119,7 +118,7 @@ def goals() -> None:
 @app.command()
 def status() -> None:
     """Show the current baseline and delivery state."""
-    table = Table(title="V1 Status")
+    table = create_table("V1 Status")
     table.add_column("Area")
     table.add_column("State")
     table.add_row("Fixed architecture", "documented")
