@@ -191,6 +191,8 @@ pytest
 
 - [README.zh-CN.md](./README.zh-CN.md)
 - [README.ko-KR.md](./README.ko-KR.md)
+- [docs/user-manual.md](./docs/user-manual.md)
+- [docs/test-manual.md](./docs/test-manual.md)
 - [docs/architecture-baseline.md](./docs/architecture-baseline.md)
 - [docs/progress.md](./docs/progress.md)
 - [docs/team-mode.md](./docs/team-mode.md)
