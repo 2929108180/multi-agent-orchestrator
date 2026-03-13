@@ -40,6 +40,13 @@ class ReviewVerdict(BaseModel):
     backend_action: str = ""
 
 
+class WorkerWorkspaceInfo(BaseModel):
+    role: str
+    path: str
+    git_ref: str
+    note_path: str = ""
+
+
 class WorkflowRun(BaseModel):
     run_id: str = Field(default_factory=lambda: uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -47,3 +54,4 @@ class WorkflowRun(BaseModel):
     plan: ArchitectPlan
     exchanges: list[AgentExchange] = Field(default_factory=list)
     verdicts: list[ReviewVerdict] = Field(default_factory=list)
+    workspaces: list[WorkerWorkspaceInfo] = Field(default_factory=list)

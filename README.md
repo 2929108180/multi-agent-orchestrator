@@ -38,6 +38,7 @@ mao status
 mao validate --config configs/live.multi-provider.example.yaml
 mao roadmap
 mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock
+mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock --with-worktrees
 ```
 
 ## Development

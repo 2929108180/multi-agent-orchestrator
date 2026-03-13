@@ -11,7 +11,9 @@ from mao_cli.core.models import (
     ReviewVerdict,
     WorkerTask,
     WorkflowRun,
+    WorkerWorkspaceInfo,
 )
+from mao_cli.gitops import WorkerWorkspace, create_worker_worktrees, write_worker_note
 from mao_cli.providers import ModelGateway
 
 
@@ -166,6 +168,11 @@ def render_summary(run: WorkflowRun) -> str:
         "",
     ]
 
+    if run.workspaces:
+        lines.extend(["## Workspaces"])
+        lines.extend([f"- {workspace.role}: `{workspace.path}`" for workspace in run.workspaces])
+        lines.append("")
+
     for exchange in run.exchanges:
         lines.extend(
             [
@@ -208,11 +215,32 @@ def execute_workflow(
     requirement: str,
     config: AppConfig,
     output_dir: Path,
+    repository_root: Path,
     force_mock: bool = False,
+    with_worktrees: bool = False,
 ) -> Path:
     gateway = ModelGateway(config=config, force_mock=force_mock)
     plan = build_architect_plan(requirement)
     run = WorkflowRun(requirement=requirement, plan=plan)
+
+    workspace_map: dict[str, WorkerWorkspace] = {}
+    if with_worktrees:
+        workspace_root = repository_root.parent / f"{repository_root.name}-worktrees"
+        created_workspaces = create_worker_worktrees(
+            repository_root=repository_root,
+            workspace_root=workspace_root,
+            run_id=run.run_id,
+            roles=["frontend", "backend"],
+        )
+        workspace_map = {workspace.role: workspace for workspace in created_workspaces}
+        run.workspaces = [
+            WorkerWorkspaceInfo(
+                role=workspace.role,
+                path=workspace.path,
+                git_ref=workspace.git_ref,
+            )
+            for workspace in created_workspaces
+        ]
 
     def _call(role: str, prompt: str, round_index: int = 0) -> AgentExchange:
         provider = config.providers[role]
@@ -239,6 +267,7 @@ def execute_workflow(
         backend_exchange = backend_future.result()
 
     run.exchanges.extend([frontend_exchange, backend_exchange])
+    _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
 
     review_prompt = _render_review_prompt(
         requirement=requirement,
@@ -277,6 +306,7 @@ def execute_workflow(
             backend_exchange = backend_future.result()
 
         run.exchanges.extend([frontend_exchange, backend_exchange])
+        _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
         review_prompt = _render_review_prompt(
             requirement=requirement,
             plan=plan,
@@ -289,3 +319,33 @@ def execute_workflow(
         run.verdicts.append(verdict)
 
     return persist_run(run, output_dir)
+
+
+def _write_workspace_notes(
+    run: WorkflowRun,
+    workspace_map: dict[str, WorkerWorkspace],
+    frontend_exchange: AgentExchange,
+    backend_exchange: AgentExchange,
+) -> None:
+    if not workspace_map:
+        return
+
+    for exchange in (frontend_exchange, backend_exchange):
+        workspace = workspace_map.get(exchange.role)
+        if workspace is None:
+            continue
+        note_path = write_worker_note(
+            workspace=workspace,
+            content="\n".join(
+                [
+                    f"# {exchange.role.title()} Notes",
+                    "",
+                    f"Round: {exchange.round_index}",
+                    "",
+                    exchange.response,
+                ]
+            ),
+        )
+        for workspace_info in run.workspaces:
+            if workspace_info.role == exchange.role:
+                workspace_info.note_path = str(note_path)

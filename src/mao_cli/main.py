@@ -166,6 +166,11 @@ def run(
         "--mock",
         help="Force mock providers even if live providers are configured.",
     ),
+    with_worktrees: bool = typer.Option(
+        False,
+        "--with-worktrees",
+        help="Create isolated git worktrees for frontend and backend outputs.",
+    ),
 ) -> None:
     """Execute the current local orchestration workflow."""
     project_root = _project_root()
@@ -176,7 +181,9 @@ def run(
         requirement=requirement,
         config=loaded,
         output_dir=target_dir,
+        repository_root=project_root,
         force_mock=mock,
+        with_worktrees=with_worktrees,
     )
     console.print(f"Run artifacts saved to: {run_dir}")
 

@@ -16,7 +16,7 @@
 - [x] Add provider gateway abstraction
 - [x] Add mock-mode multi-agent workflow
 - [x] Add live multi-provider key validation helpers
-- [ ] Add Git worktree integration
+- [x] Add Git worktree integration
 - [ ] Add MCP tool integration
 - [ ] Add structured review-to-repair routing
 - [ ] Add persistent run index and search
