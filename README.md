@@ -2,10 +2,7 @@
 
 CLI-first orchestration system for cross-vendor coding agents.
 
-## Languages
-
-- Simplified Chinese: [README.zh-CN.md](E:\Ai\multi-agent-orchestrator\README.zh-CN.md)
-- Korean: [README.ko-KR.md](E:\Ai\multi-agent-orchestrator\README.ko-KR.md)
+English | [简体中文](./README.zh-CN.md) | [한국어](./README.ko-KR.md)
 
 ## Goal
 

@@ -2,6 +2,8 @@
 
 面向跨厂商编码代理的本地优先编排系统。
 
+[English](./README.md) | 简体中文 | [한국어](./README.ko-KR.md)
+
 ## 目标
 
 - 接收产品或开发需求
@@ -52,8 +54,3 @@ mao policy show
 - `runtime/registry/mcp_servers.json`
 
 本地 skill / MCP 可通过导入进入 registry，而不是直接作为运行时真相源。
-
-## 语言版本
-
-- English: [README.md](E:\Ai\multi-agent-orchestrator\README.md)
-- 한국어: [README.ko-KR.md](E:\Ai\multi-agent-orchestrator\README.ko-KR.md)

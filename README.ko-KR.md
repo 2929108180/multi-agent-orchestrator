@@ -2,6 +2,8 @@
 
 여러 벤더의 코딩 에이전트를 조율하는 로컬 우선 오케스트레이터입니다.
 
+[English](./README.md) | [简体中文](./README.zh-CN.md) | 한국어
+
 ## 목표
 
 - 제품 또는 개발 요구사항 수신
@@ -52,8 +54,3 @@ mao policy show
 - `runtime/registry/mcp_servers.json`
 
 로컬 skill / MCP는 먼저 registry로 가져온 뒤 사용합니다.
-
-## 언어 버전
-
-- English: [README.md](E:\Ai\multi-agent-orchestrator\README.md)
-- 简体中文: [README.zh-CN.md](E:\Ai\multi-agent-orchestrator\README.zh-CN.md)
