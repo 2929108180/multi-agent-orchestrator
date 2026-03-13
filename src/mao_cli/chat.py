@@ -21,6 +21,7 @@ from mao_cli.sessions import (
     create_session,
     load_latest_session,
     load_session,
+    list_sessions,
 )
 from mao_cli.skills import build_team_context, discover_skills
 from mao_cli.terminal import create_table
@@ -50,6 +51,7 @@ CHAT_COMMANDS = {
     "/context": "Show the conversation context sent into new runs.",
     "/clear": "Clear the saved turns in the current session.",
     "/skills": "List available local skills for team mode.",
+    "/resume": "Choose and resume a saved session from this chat window.",
     "/last": "Show the latest run directory from this session.",
     "/exit": "Exit the chat session.",
     "/quit": "Exit the chat session.",
@@ -105,6 +107,7 @@ class ChatSession:
         self.skills = discover_skills(project_root)
         self.team_context = build_team_context(project_root)
         self.session = self._load_or_create_session(session_id=session_id, resume_latest=resume_latest)
+        self.last_run_dir = self._derive_last_run_dir()
         self._preflight_live_mode()
 
     def print_welcome(self) -> None:
@@ -123,7 +126,7 @@ class ChatSession:
                 "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]"
             )
         self.console.print(
-            "[magenta]Built-in commands:[/magenta] /help /status /doctor /mode /history /context /skills /last /exit"
+            "[magenta]Built-in commands:[/magenta] /help /status /doctor /mode /history /context /skills /resume /last /exit"
         )
 
     def run(self) -> None:
@@ -226,6 +229,9 @@ class ChatSession:
             return False
         if command == "/skills":
             self._print_skills()
+            return False
+        if command == "/resume":
+            self._resume_session()
             return False
         if command == "/last":
             if self.last_run_dir is None:
@@ -395,3 +401,56 @@ class ChatSession:
         for skill in self.skills[:20]:
             table.add_row(skill.name, skill.description)
         self.console.print(table)
+
+    def _resume_session(self) -> None:
+        sessions = list_sessions(self.project_root, self.config.runtime_root, limit=20)
+        if not sessions:
+            self.console.print("No saved sessions found.")
+            return
+
+        table = create_table("Saved Sessions")
+        table.add_column("No.")
+        table.add_column("Session")
+        table.add_column("Mode")
+        table.add_column("Turns")
+        table.add_column("Updated")
+        for index, session in enumerate(sessions, start=1):
+            table.add_row(
+                str(index),
+                session.session_id,
+                session.mode,
+                str(len(session.turns)),
+                session.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        self.console.print(table)
+        self.console.print("Enter a session number to resume, or press Enter to cancel.")
+
+        try:
+            choice = input("resume> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            self.console.print("Resume cancelled.")
+            return
+
+        if not choice:
+            self.console.print("Resume cancelled.")
+            return
+        if not choice.isdigit():
+            self.console.print("Resume cancelled. Enter a valid number next time.")
+            return
+
+        index = int(choice)
+        if index < 1 or index > len(sessions):
+            self.console.print("Resume cancelled. Session number out of range.")
+            return
+
+        self.session = sessions[index - 1]
+        self.last_run_dir = self._derive_last_run_dir()
+        self.console.print(
+            f"Resumed session {self.session.session_id} with {len(self.session.turns)} saved turns."
+        )
+
+    def _derive_last_run_dir(self) -> Path | None:
+        if not self.session.turns:
+            return None
+        run_dir = self.session.turns[-1].run_dir.strip()
+        return Path(run_dir) if run_dir else None

@@ -212,6 +212,46 @@ def test_chat_history_and_context_with_resumable_session(tmp_path: Path) -> None
     assert "Conversation context from recent turns:" in result.stdout
 
 
+def test_chat_resume_command_restores_session(tmp_path: Path) -> None:
+    config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-resume-config.yaml")
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "project_name": "multi-agent-orchestrator",
+                "runtime_root": str((tmp_path / "runtime").resolve()),
+                "artifacts_root": str((tmp_path / "artifacts").resolve()),
+                "workflow": {"max_repair_rounds": 1},
+                "providers": {
+                    "architect": {"adapter": "mock", "model": "mock/architect"},
+                    "frontend": {"adapter": "mock", "model": "mock/frontend"},
+                    "backend": {"adapter": "mock", "model": "mock/backend"},
+                    "reviewer": {"adapter": "mock", "model": "mock/reviewer"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    first = runner.invoke(
+        app,
+        ["chat", "--mock", "--config", str(config_path)],
+        input="Build a task tracker\n/exit\n",
+    )
+    assert first.exit_code == 0
+
+    second = runner.invoke(
+        app,
+        ["chat", "--mock", "--config", str(config_path), "--resume-latest"],
+        input="/resume\n1\n/last\n/exit\n",
+    )
+    assert second.exit_code == 0
+    assert "Saved Sessions" in second.stdout
+    assert "Resumed session" in second.stdout
+    assert "last_run=" in second.stdout
+
+
 def test_chat_live_preflight_fails_cleanly(tmp_path: Path) -> None:
     config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-live-config.yaml")
     config_path.write_text(
