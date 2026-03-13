@@ -1,137 +1,195 @@
 # Multi-Agent Orchestrator
 
-CLI-first orchestration system for cross-vendor coding agents.
-
 English | [简体中文](./README.zh-CN.md) | [한국어](./README.ko-KR.md)
 
-## Goal
+MAO is a local-first orchestration system for cross-vendor coding agents.  
+It is not trying to be just another single-model chat interface. The goal is to turn multiple models, skills, MCP tools, approval policies, and integration flows into one coherent AI team workflow.
 
-Build a local-first engine that can:
+## Why MAO
 
-- accept a product or coding request
-- generate an execution plan and shared contract
-- dispatch frontend and backend work to different model providers
-- review, repair, and integrate results
-- keep a full audit trail for every run
+- Cross-vendor collaboration
+  Use different vendors for planning, frontend, backend, and review instead of forcing one model to do everything.
+- Local-first control
+  Sessions, run artifacts, approval queues, skill registry, and MCP registry stay on your machine.
+- Unified capability layer
+  Skills, MCP servers, policies, approvals, and capability exposure are managed by MAO, not left to model vendors.
+- Team-oriented workflow
+  Models behave as coordinated team roles rather than isolated chat bots.
+- Reviewable and resumable
+  You can inspect diffs, defer changes, switch to another approval item, and resume the same session later.
 
-## First Version Scope
+## Core Capabilities
 
-Version 1 focuses on a local CLI workflow:
+- Multi-agent team orchestration
+  `architect / frontend / backend / reviewer`
+- Layered memory
+  `session memory / task memory / review memory`
+- Session recovery
+  `--resume-latest`, `--session-id`, and in-chat `/resume`
+- Approval policy engine
+  Team default, role overrides, and model overrides
+- Diff-based approval queue
+  `/queue`, `/pick`, `/approve`, `/reject`, `/defer`
+- Integration worktree apply
+  Approved changes can be written into a dedicated integration workspace
+- Capability registry
+  Skills and MCP are imported, registered, listed, granted, and queried through MAO
+- Direct and routed providers
+  Supports official APIs and `base_url`-backed gateways
 
-1. Parse a request into a plan
-2. Create structured worker tasks
-3. Call different models through a provider gateway
-4. Run review and repair loops
-5. Store outputs and traces locally
+## What Makes It Different
 
-## Project Docs
+### 1. Real Team Workflow
 
-- `docs/architecture-baseline.md`: fixed architecture and iteration rules
-- `docs/v1-target.md`: version 1 goal and acceptance criteria
-- `docs/progress.md`: visible delivery checklist
-- `docs/team-mode.md`: current team roles, skill support, and guardrails
+A typical MAO run looks like this:
 
-## Useful Commands
+1. The user provides a requirement
+2. `architect` builds the execution plan and shared contract
+3. `frontend` and `backend` produce proposals in parallel
+4. `reviewer` checks consistency and emits defects
+5. Defects are routed back to the right owner
+6. Approval items are queued with diffs
+7. Approved items are applied to an integration worktree
+
+### 2. Conflict Prevention
+
+MAO does not allow workers to freely collide on the same files. It currently includes:
+
+- `allowed_paths / restricted_paths`
+- shared file detection
+- conflict detection across workers
+- integration-layer decisions
+- policy-driven `auto / manual / reject`
+
+### 3. Capability Ownership
+
+Models do not “magically know” what skills or MCP servers exist. MAO controls that layer explicitly:
+
+- local discovery
+- import into registry
+- registry-backed runtime visibility
+- role/model access assignment
+
+## Common Commands
 
 ```powershell
-mao doctor
-mao doctor --config configs/live.multi-provider.example.yaml
-mao goals
-mao status
-mao validate --config configs/live.multi-provider.example.yaml
-mao roadmap
-mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock
-mao run "Build a task tracker with dashboard" --config configs/local.example.yaml --mock --with-worktrees
 mao chat --mock
-mao chat --mock --with-worktrees
+mao chat --live --config configs/live.multi-provider.example.yaml
+
 mao skills import-local
 mao skills list
 mao skills show mcp-builder
+mao skills register demo_skill --description "demo skill" --path C:\demo\SKILL.md
+mao skills grant demo_skill --role frontend
+
 mao mcp import-local
 mao mcp list
 mao mcp show mao_mcp
+mao mcp register demo_mcp --transport streamable-http --url http://localhost:8123/mcp
+mao mcp grant demo_mcp --role reviewer
+
 mao policy show
-mao mcp-serve --transport stdio
-mao mcp-serve --transport streamable-http --host 127.0.0.1 --port 8000
 ```
 
 ## Chat Mode
 
-`mao chat` provides an interactive shell over the current workflow.
+`mao chat` currently supports:
 
-- Enter a requirement to trigger one workflow run
-- Watch workflow stage updates in real time during chat execution
-- Type `/` and use `Tab` in a real terminal to complete slash commands
-- Use `/help` to see commands and their purpose
-- Use `/status`, `/doctor`, `/mode`, `/history`, `/context`, `/skills`, `/last`, and `/exit` during a session
-- Use `/resume` to choose and restore a saved session from inside chat
-- Use `/queue`, `/pick <n>`, `/review`, `/approve`, `/reject`, and `/defer` to work through approval items
-- Use `--resume-latest` or `--session-id <id>` to continue a saved session
+- session memory and resume
+- continuous context injection
+- real-time workflow stage display
+- skill and MCP discovery from the registry
+- diff-based approval review
+- integration worktree apply
 
-## Live Providers
+Useful in-chat commands:
 
-Live mode supports both:
+- `/history`
+- `/context`
+- `/skills`
+- `/mcp`
+- `/resume`
+- `/queue`
+- `/review`
+- `/approve`
+- `/reject`
+- `/defer`
+- `/skill-import-local`
+- `/mcp-import-local`
+- `/grant-skill role <role> <skill>`
+- `/grant-mcp role <role> <server>`
+- `/register-skill <name> <path> <description>`
+- `/register-mcp <name> <transport> <command|url> [args...]`
 
-- direct official provider APIs
-- OpenAI-compatible proxies or routed gateways via `base_url`
+## Capability Registry
 
-Provider configuration can reference:
+MAO now treats its own registry as the primary runtime source:
+
+- `runtime/registry/skills.json`
+- `runtime/registry/mcp_servers.json`
+
+Local discovery is an import source, not the final source of truth.
+
+That means you can:
+
+- import existing local skills and MCP configs
+- manually register new capabilities
+- assign access by role or by model
+
+## Live Provider Support
+
+MAO supports both:
+
+- direct official APIs
+- routed or proxy-based providers through `base_url`
+
+Unified provider config can define:
 
 - `api_key_env`
 - `base_url`
 - `extra_headers`
+- approval policy
 
-## Capability Registry
+## Who This Is For
 
-Local discovery can be imported into MAO's own registry:
+- Individual developers who want a real multi-model coding team
+- Teams that do not want to be locked to one model vendor
+- Engineering groups that need local auditability and approval control
+- AI tooling builders who want unified skill, MCP, approval, and session management
 
-- `mao skills import-local`
-- `mao mcp import-local`
+## Current Product Stage
 
-Operational listing and inspection should use the registry:
+MAO has moved past the toy stage and is now in a serious trial stage.
 
-- `mao skills list`
-- `mao skills show <name>`
-- `mao mcp list`
-- `mao mcp show <server>`
-- `mao policy show`
+It is already useful for:
 
-## Current Building Blocks
+- requirement decomposition
+- architecture planning
+- frontend/backend contract alignment
+- review and repair loops
+- approval and integration management
 
-The project reuses existing components instead of rebuilding them:
+Still being expanded:
 
-- `LiteLLM` for multi-provider model access
-- `MCP Python SDK` for the local MCP server
-- system `git` for worktree isolation
-- `Typer` and `Rich` for the CLI
-- `Pydantic` for configs and run records
-
-## Current Safety Guardrails
-
-- MCP-triggered workflow execution stays in mock mode
-- Config paths used by CLI and MCP must stay inside the project root
-- Run ids are validated before reading artifacts
-- Requirement and defect text are length-bounded before execution and storage
+- finer-grained patch and merge flow
+- stronger shared-file integration actor
+- target-branch merge management
+- richer approval UX
+- more natural in-chat skill and MCP registration
 
 ## Development
-
-Create a virtual environment and install the project in editable mode.
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e .[dev]
-```
-
-Run the CLI:
-
-```powershell
-mao --help
-mao doctor
-```
-
-Run tests:
-
-```powershell
 pytest
 ```
+
+## Related Docs
+
+- [README.zh-CN.md](./README.zh-CN.md)
+- [README.ko-KR.md](./README.ko-KR.md)
+- [docs/architecture-baseline.md](./docs/architecture-baseline.md)
+- [docs/progress.md](./docs/progress.md)
+- [docs/team-mode.md](./docs/team-mode.md)
