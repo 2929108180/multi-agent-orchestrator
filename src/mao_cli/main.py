@@ -8,12 +8,16 @@ from mao_cli.chat import ChatSession
 from mao_cli.config import load_config
 from mao_cli.mcp_server import run_mcp_server
 from mao_cli.registry import (
+    assign_mcp_access,
+    assign_skill_access,
     find_mcp_record,
     find_skill_record,
     import_local_mcp,
     import_local_skills,
     load_mcp_registry,
     load_skill_registry,
+    register_mcp_server,
+    register_skill,
 )
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
@@ -357,9 +361,39 @@ def skills_show(name: str = typer.Argument(..., help="Skill name.")) -> None:
                 f"source={record.source}",
                 f"path={record.path}",
                 f"description={record.description}",
+                f"roles={record.roles}",
+                f"models={record.models}",
             ]
         )
     )
+
+
+@skills_app.command("register")
+def skills_register(
+    name: str = typer.Argument(...),
+    description: str = typer.Option(..., "--description"),
+    path: str = typer.Option(..., "--path"),
+) -> None:
+    """Register or update one skill in the registry."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    target = register_skill(project_root, runtime_root, name=name, description=description, path=path)
+    console.print(f"registered={name}")
+    console.print(f"registry={target}")
+
+
+@skills_app.command("grant")
+def skills_grant(
+    name: str = typer.Argument(...),
+    role: str | None = typer.Option(None, "--role"),
+    model: str | None = typer.Option(None, "--model"),
+) -> None:
+    """Grant a role or model access to a registered skill."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    target = assign_skill_access(project_root, runtime_root, name=name, role=role, model=model)
+    console.print(f"granted={name}")
+    console.print(f"registry={target}")
 
 
 @mcp_app.command("import-local")
@@ -413,10 +447,51 @@ def mcp_show(name: str = typer.Argument(..., help="MCP server name.")) -> None:
                 f"command={record.command}",
                 f"args={record.args}",
                 f"url={record.url}",
+                f"roles={record.roles}",
+                f"models={record.models}",
                 f"tools={len(record.tools)}",
             ]
         )
     )
+
+
+@mcp_app.command("register")
+def mcp_register(
+    name: str = typer.Argument(...),
+    transport: str = typer.Option(..., "--transport"),
+    command: str = typer.Option("", "--command"),
+    url: str = typer.Option("", "--url"),
+    args: str = typer.Option("", "--args", help="Space-separated arguments for stdio command."),
+) -> None:
+    """Register or update one MCP server in the registry."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    arg_list = [part for part in args.split(" ") if part]
+    target = register_mcp_server(
+        project_root,
+        runtime_root,
+        name=name,
+        transport=transport,
+        command=command,
+        args=arg_list,
+        url=url,
+    )
+    console.print(f"registered={name}")
+    console.print(f"registry={target}")
+
+
+@mcp_app.command("grant")
+def mcp_grant(
+    name: str = typer.Argument(...),
+    role: str | None = typer.Option(None, "--role"),
+    model: str | None = typer.Option(None, "--model"),
+) -> None:
+    """Grant a role or model access to a registered MCP server."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root)
+    target = assign_mcp_access(project_root, runtime_root, name=name, role=role, model=model)
+    console.print(f"granted={name}")
+    console.print(f"registry={target}")
 
 
 @policy_app.command("show")

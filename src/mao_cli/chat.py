@@ -13,7 +13,16 @@ from mao_cli.core.models import WorkflowEvent
 from mao_cli.gitops import WorkerWorkspace, apply_proposal_to_workspace, ensure_named_worktree
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
-from mao_cli.registry import registered_or_discovered_skills
+from mao_cli.registry import (
+    assign_mcp_access,
+    assign_skill_access,
+    import_local_mcp,
+    import_local_skills,
+    load_mcp_registry,
+    register_mcp_server,
+    register_skill,
+    registered_or_discovered_skills,
+)
 from mao_cli.security import validate_requirement
 from mao_cli.sessions import (
     ApprovalQueueItem,
@@ -59,6 +68,13 @@ CHAT_COMMANDS = {
     "/context": "Show the conversation context sent into new runs.",
     "/clear": "Clear the saved turns in the current session.",
     "/skills": "List available local skills for team mode.",
+    "/mcp": "List registered MCP servers for team mode.",
+    "/skill-import-local": "Import local skills into the registry.",
+    "/mcp-import-local": "Import local MCP servers into the registry.",
+    "/grant-skill": "Grant a role or model access to one registered skill.",
+    "/grant-mcp": "Grant a role or model access to one registered MCP server.",
+    "/register-skill": "Register one skill into the registry.",
+    "/register-mcp": "Register one MCP server into the registry.",
     "/resume": "Choose and resume a saved session from this chat window.",
     "/queue": "List queued approval items.",
     "/review": "Show the currently selected approval item.",
@@ -141,7 +157,10 @@ class ChatSession:
                 "[yellow]Type `/help` for commands. Tab completion is unavailable until `prompt_toolkit` is installed.[/yellow]"
             )
         self.console.print(
-            "[magenta]Built-in commands:[/magenta] /help /status /doctor /mode /history /context /skills /resume /queue /review /approve /reject /defer /last /exit"
+            "[magenta]Built-in commands:[/magenta] "
+            "/help /status /doctor /mode /history /context /skills /mcp "
+            "/skill-import-local /mcp-import-local /grant-skill /grant-mcp "
+            "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /exit"
         )
 
     def run(self) -> None:
@@ -156,7 +175,7 @@ class ChatSession:
                 self.console.print("\nChat interrupted.")
                 return
 
-            line = raw.strip()
+            line = raw.lstrip("\ufeff").strip()
             if not line:
                 continue
             if line.startswith("/"):
@@ -244,6 +263,27 @@ class ChatSession:
             return False
         if command == "/skills":
             self._print_skills()
+            return False
+        if command == "/mcp":
+            self._print_mcp_servers()
+            return False
+        if command == "/skill-import-local":
+            self._import_local_skills()
+            return False
+        if command == "/mcp-import-local":
+            self._import_local_mcp()
+            return False
+        if command == "/grant-skill":
+            self._grant_skill(argument)
+            return False
+        if command == "/grant-mcp":
+            self._grant_mcp(argument)
+            return False
+        if command == "/register-skill":
+            self._register_skill(argument)
+            return False
+        if command == "/register-mcp":
+            self._register_mcp(argument)
             return False
         if command == "/resume":
             self._resume_session()
@@ -464,6 +504,97 @@ class ChatSession:
         for skill in self.skills[:20]:
             table.add_row(skill.name, skill.description)
         self.console.print(table)
+
+    def _print_mcp_servers(self) -> None:
+        servers = load_mcp_registry(self.project_root, self.config.runtime_root)
+        if not servers:
+            self.console.print("No MCP servers registered.")
+            return
+        table = create_table("Registered MCP Servers")
+        table.add_column("Name")
+        table.add_column("Transport")
+        table.add_column("Source")
+        for server in servers:
+            table.add_row(server.name, server.transport, server.source)
+        self.console.print(table)
+
+    def _import_local_skills(self) -> None:
+        target = import_local_skills(self.project_root, self.config.runtime_root)
+        self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
+        self.team_context = self._build_team_context()
+        self.console.print(f"skills imported -> {target}")
+
+    def _import_local_mcp(self) -> None:
+        target = import_local_mcp(self.project_root, self.config.runtime_root)
+        self.console.print(f"mcp imported -> {target}")
+
+    def _grant_skill(self, argument: str) -> None:
+        parts = argument.split()
+        if len(parts) != 3 or parts[0] not in {"role", "model"}:
+            self.console.print("Use `/grant-skill role <role> <skill>` or `/grant-skill model <model> <skill>`.")
+            return
+        kind, target, skill_name = parts
+        path = assign_skill_access(
+            self.project_root,
+            self.config.runtime_root,
+            name=skill_name,
+            role=target if kind == "role" else None,
+            model=target if kind == "model" else None,
+        )
+        self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
+        self.team_context = self._build_team_context()
+        self.console.print(f"skill grant updated -> {path}")
+
+    def _grant_mcp(self, argument: str) -> None:
+        parts = argument.split()
+        if len(parts) != 3 or parts[0] not in {"role", "model"}:
+            self.console.print("Use `/grant-mcp role <role> <server>` or `/grant-mcp model <model> <server>`.")
+            return
+        kind, target, server_name = parts
+        path = assign_mcp_access(
+            self.project_root,
+            self.config.runtime_root,
+            name=server_name,
+            role=target if kind == "role" else None,
+            model=target if kind == "model" else None,
+        )
+        self.console.print(f"mcp grant updated -> {path}")
+
+    def _register_skill(self, argument: str) -> None:
+        parts = argument.split(" ", 2)
+        if len(parts) != 3:
+            self.console.print("Use `/register-skill <name> <path> <description>`.")
+            return
+        name, path, description = parts
+        target = register_skill(
+            self.project_root,
+            self.config.runtime_root,
+            name=name,
+            description=description,
+            path=path,
+        )
+        self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
+        self.team_context = self._build_team_context()
+        self.console.print(f"skill registered -> {target}")
+
+    def _register_mcp(self, argument: str) -> None:
+        parts = argument.split()
+        if len(parts) < 3:
+            self.console.print("Use `/register-mcp <name> <transport> <command|url> [args...]`.")
+            return
+        name, transport, endpoint, *rest = parts
+        kwargs = {"name": name, "transport": transport}
+        if transport == "stdio":
+            kwargs["command"] = endpoint
+            kwargs["args"] = rest
+        else:
+            kwargs["url"] = endpoint
+        target = register_mcp_server(
+            self.project_root,
+            self.config.runtime_root,
+            **kwargs,
+        )
+        self.console.print(f"mcp registered -> {target}")
 
     def _append_run_approval_items(self, run_dir: Path) -> None:
         integration_path = run_dir / "integration.json"

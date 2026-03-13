@@ -15,6 +15,7 @@ class SkillRecord(BaseModel):
     source: str = "local"
     enabled: bool = True
     roles: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
 
 
 class MCPToolRecord(BaseModel):
@@ -22,6 +23,7 @@ class MCPToolRecord(BaseModel):
     description: str
     enabled: bool = True
     roles: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
 
 
 class MCPServerRecord(BaseModel):
@@ -32,6 +34,8 @@ class MCPServerRecord(BaseModel):
     url: str = ""
     source: str = "local"
     enabled: bool = True
+    roles: list[str] = Field(default_factory=list)
+    models: list[str] = Field(default_factory=list)
     tools: list[MCPToolRecord] = Field(default_factory=list)
 
 
@@ -169,3 +173,93 @@ def find_mcp_record(project_root: Path, runtime_root: str, name: str) -> MCPServ
         if record.name.lower() == target:
             return record
     raise FileNotFoundError(f"MCP server `{name}` not found in registry.")
+
+
+def assign_skill_access(
+    project_root: Path,
+    runtime_root: str,
+    *,
+    name: str,
+    role: str | None = None,
+    model: str | None = None,
+) -> Path:
+    records = load_skill_registry(project_root, runtime_root)
+    for record in records:
+        if record.name.lower() == name.lower():
+            if role and role not in record.roles:
+                record.roles.append(role)
+            if model and model not in record.models:
+                record.models.append(model)
+            return save_skill_registry(project_root, runtime_root, records)
+    raise FileNotFoundError(f"Skill `{name}` not found in registry.")
+
+
+def register_skill(
+    project_root: Path,
+    runtime_root: str,
+    *,
+    name: str,
+    description: str,
+    path: str,
+    source: str = "manual",
+) -> Path:
+    records = load_skill_registry(project_root, runtime_root)
+    existing = next((record for record in records if record.name.lower() == name.lower()), None)
+    if existing is None:
+        records.append(SkillRecord(name=name, description=description, path=path, source=source))
+    else:
+        existing.description = description
+        existing.path = path
+        existing.source = source
+    return save_skill_registry(project_root, runtime_root, records)
+
+
+def assign_mcp_access(
+    project_root: Path,
+    runtime_root: str,
+    *,
+    name: str,
+    role: str | None = None,
+    model: str | None = None,
+) -> Path:
+    records = load_mcp_registry(project_root, runtime_root)
+    for record in records:
+        if record.name.lower() == name.lower():
+            if role and role not in record.roles:
+                record.roles.append(role)
+            if model and model not in record.models:
+                record.models.append(model)
+            return save_mcp_registry(project_root, runtime_root, records)
+    raise FileNotFoundError(f"MCP server `{name}` not found in registry.")
+
+
+def register_mcp_server(
+    project_root: Path,
+    runtime_root: str,
+    *,
+    name: str,
+    transport: str,
+    command: str = "",
+    args: list[str] | None = None,
+    url: str = "",
+    source: str = "manual",
+) -> Path:
+    records = load_mcp_registry(project_root, runtime_root)
+    existing = next((record for record in records if record.name.lower() == name.lower()), None)
+    payload = MCPServerRecord(
+        name=name,
+        transport=transport,
+        command=command,
+        args=args or [],
+        url=url,
+        source=source,
+    )
+    if existing is None:
+        records.append(payload)
+    else:
+        existing.transport = payload.transport
+        existing.command = payload.command
+        existing.args = payload.args
+        existing.url = payload.url
+        existing.source = payload.source
+    return save_mcp_registry(project_root, runtime_root, records)

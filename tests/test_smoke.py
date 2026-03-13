@@ -51,3 +51,14 @@ def test_registry_commands() -> None:
     policy = runner.invoke(app, ["policy", "show"])
     assert policy.exit_code == 0
     assert "Approval" in policy.stdout
+
+    grant_skill = runner.invoke(app, ["skills", "grant", "mcp-builder", "--role", "frontend"])
+    assert grant_skill.exit_code == 0
+    assert "granted=" in grant_skill.stdout
+
+    register_mcp = runner.invoke(
+        app,
+        ["mcp", "register", "demo_mcp", "--transport", "streamable-http", "--url", "http://localhost:8123/mcp"],
+    )
+    assert register_mcp.exit_code == 0
+    assert "registered=demo_mcp" in register_mcp.stdout
