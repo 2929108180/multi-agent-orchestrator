@@ -152,6 +152,7 @@ class ChatSession:
         self.member_states = {
             "frontend": True,
             "backend": True,
+            "integration": True,
             "reviewer": True,
         }
         self._preflight_live_mode()
@@ -385,7 +386,7 @@ class ChatSession:
         review_memory = build_review_memory(self.session)
         capability_contexts = {
             role: self._build_capability_context(role)
-            for role in ("frontend", "backend", "reviewer")
+            for role in ("frontend", "backend", "integration", "reviewer")
         }
         run_dir = execute_workflow(
             requirement=requirement,
@@ -613,7 +614,7 @@ class ChatSession:
         table.add_column("Role")
         table.add_column("Enabled")
         table.add_column("Model")
-        for role in ("frontend", "backend", "reviewer"):
+        for role in ("frontend", "backend", "integration", "reviewer"):
             table.add_row(role, str(self.member_states[role]), self.config.providers[role].model)
         self._say_renderable(table)
 
@@ -624,7 +625,7 @@ class ChatSession:
             return
         _, role = parts
         if role not in self.member_states:
-            self._say("Allowed roles: frontend, backend, reviewer.")
+            self._say("Allowed roles: frontend, backend, integration, reviewer.")
             return
         self.member_states[role] = parts[0] == "on"
         self._say(f"member {role} set to {self.member_states[role]}")
@@ -643,6 +644,7 @@ class ChatSession:
             "architect": "bold cyan",
             "frontend": "bold magenta",
             "backend": "bold green",
+            "integration": "bold blue",
             "reviewer": "bold yellow",
         }
         style = styles.get(role, "bold white")

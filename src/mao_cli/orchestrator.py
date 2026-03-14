@@ -37,6 +37,7 @@ def build_architect_plan(requirement: str) -> ArchitectPlan:
         "request and response field alignment",
         "error handling coverage",
         "missing acceptance criteria",
+        "frontend and backend contract binding quality",
     ]
     return ArchitectPlan(
         summary=f"Deliver a first working slice for: {requirement}",
@@ -91,6 +92,31 @@ def build_architect_plan(requirement: str) -> ArchitectPlan:
                 "ui/**",
                 "web/**",
                 "shared-contracts/**",
+            ],
+        ),
+        integration_task=WorkerTask(
+            role="integration",
+            objective=f"Bind the frontend and backend contract for: {requirement}",
+            deliverables=[
+                "api binding summary",
+                "shared contract glue notes",
+                "integration candidate file targets",
+            ],
+            acceptance_criteria=[
+                "Maps frontend calls to backend endpoints",
+                "Explains shared request and response fields",
+                "Flags shared files that must go through integration",
+            ],
+            allowed_paths=[
+                "shared-contracts/**",
+                "contracts/**",
+                "schemas/**",
+                "shared/**",
+                "integration/**",
+            ],
+            restricted_paths=[
+                "frontend/**",
+                "backend/**",
             ],
         ),
         review_focus=review_focus,
@@ -399,6 +425,7 @@ def execute_workflow(
 
     frontend_prompt = _render_worker_prompt(plan, plan.frontend_task)
     backend_prompt = _render_worker_prompt(plan, plan.backend_task)
+    integration_prompt = _render_worker_prompt(plan, plan.integration_task)
     frontend_task_memory = (task_memories or {}).get("frontend", "")
     backend_task_memory = (task_memories or {}).get("backend", "")
     frontend_capability_context = (capability_contexts or {}).get("frontend", "")
@@ -427,8 +454,19 @@ def execute_workflow(
         if backend_capability_context:
             context_sections.extend(["Capability context:", backend_capability_context])
         backend_prompt = backend_prompt + "\n\n" + _render_prompt_sections(context_sections)
+    integration_capability_context = (capability_contexts or {}).get("integration", "")
+    if conversation_context or team_context or integration_capability_context:
+        context_sections = []
+        if conversation_context:
+            context_sections.extend(["Conversation context:", conversation_context])
+        if team_context:
+            context_sections.extend(["Team context:", team_context])
+        if integration_capability_context:
+            context_sections.extend(["Capability context:", integration_capability_context])
+        integration_prompt = integration_prompt + "\n\n" + _render_prompt_sections(context_sections)
     frontend_exchange = AgentExchange(role="frontend", model=config.providers["frontend"].model, prompt="", response="", round_index=0)
     backend_exchange = AgentExchange(role="backend", model=config.providers["backend"].model, prompt="", response="", round_index=0)
+    integration_exchange = AgentExchange(role="integration", model=config.providers["integration"].model, prompt="", response="", round_index=0)
     futures: dict = {}
     with ThreadPoolExecutor(max_workers=2) as executor:
         if "frontend" in active_roles:
@@ -478,11 +516,41 @@ def execute_workflow(
     run.exchanges.extend([frontend_exchange, backend_exchange])
     _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
 
+    if "integration" in active_roles:
+        _emit_event(
+            event_handler,
+            "integration_started",
+            role="integration",
+            run_id=run.run_id,
+            message=f"calling integration... objective={_summarize_text(plan.integration_task.objective)}",
+            model=config.providers["integration"].model,
+        )
+        integration_context = _render_prompt_sections(
+            [
+                "Frontend response:",
+                frontend_exchange.response,
+                "Backend response:",
+                backend_exchange.response,
+                "Shared contract:",
+                "\n".join(f"- {item}" for item in plan.shared_contract),
+            ]
+        )
+        integration_exchange = _call("integration", integration_prompt + "\n\n" + integration_context, 0)
+        run.exchanges.append(integration_exchange)
+        _emit_event(
+            event_handler,
+            "integration_completed",
+            role="integration",
+            run_id=run.run_id,
+            message=_summarize_text(integration_exchange.response),
+            model=integration_exchange.model,
+        )
+
     review_prompt = _render_review_prompt(
         requirement=requirement,
         plan=plan,
         frontend_response=frontend_exchange.response,
-        backend_response=backend_exchange.response,
+        backend_response=backend_exchange.response + "\n\nIntegration response:\n" + integration_exchange.response,
         conversation_context=conversation_context,
         team_context=team_context,
         review_memory=review_memory,

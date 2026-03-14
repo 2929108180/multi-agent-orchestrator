@@ -7,7 +7,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, model_validator
 
-REQUIRED_PROVIDER_ROLES = ("architect", "frontend", "backend", "reviewer")
+REQUIRED_PROVIDER_ROLES = ("architect", "frontend", "backend", "integration", "reviewer")
 ApprovalMode = Literal["auto", "manual", "reject"]
 APIStyle = Literal["chat_completions", "responses", "messages", "generate_content"]
 DEFAULT_API_KEY_ENVS = {
@@ -74,6 +74,8 @@ class AppConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_required_roles(self) -> "AppConfig":
+        if "integration" not in self.providers and "reviewer" in self.providers:
+            self.providers["integration"] = self.providers["reviewer"].model_copy(deep=True)
         missing_roles = [role for role in REQUIRED_PROVIDER_ROLES if role not in self.providers]
         if missing_roles:
             missing = ", ".join(missing_roles)

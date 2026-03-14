@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-AgentRole = Literal["architect", "frontend", "backend", "reviewer"]
+AgentRole = Literal["architect", "frontend", "backend", "integration", "reviewer"]
 DefectOwner = Literal["frontend", "backend", "shared"]
 DefectSeverity = Literal["low", "medium", "high"]
 IntegrationDecisionStatus = Literal["auto_accepted", "needs_confirmation", "rejected"]
@@ -26,6 +26,7 @@ class ArchitectPlan(BaseModel):
     shared_contract: list[str] = Field(default_factory=list)
     frontend_task: WorkerTask
     backend_task: WorkerTask
+    integration_task: WorkerTask
     review_focus: list[str] = Field(default_factory=list)
 
 

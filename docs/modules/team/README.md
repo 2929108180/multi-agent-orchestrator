@@ -4,6 +4,7 @@
 
 - supervisor-led orchestration
 - `architect / frontend / backend / reviewer`
+- explicit member toggles for `frontend / backend / integration / reviewer`
 - explicit team mode control
 - member-level enable/disable control
 - worker ownership boundaries
@@ -18,5 +19,6 @@
 ## Next Improvements
 
 - dynamic non-coding roles beyond frontend/backend/reviewer
+- integration actor as a fully explicit role in config and plans
 - team templates by project type
 - richer supervisor delegation policies

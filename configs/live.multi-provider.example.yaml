@@ -43,6 +43,11 @@ providers:
     adapter: anthropic
     model: anthropic/claude-sonnet-4-20250514
     api_key_env: ANTHROPIC_API_KEY
+  # Integration provider / 对接角色模型
+  integration:
+    adapter: anthropic
+    model: anthropic/claude-sonnet-4-20250514
+    api_key_env: ANTHROPIC_API_KEY
   # Reviewer provider through gateway / 通过网关接入的审查模型
   reviewer:
     adapter: openrouter

@@ -25,6 +25,10 @@ providers:
   backend:
     adapter: mock
     model: mock/backend
+  # Mock integration role / mock 对接角色
+  integration:
+    adapter: mock
+    model: mock/reviewer
   # Mock reviewer role / mock 审查角色
   reviewer:
     adapter: mock
