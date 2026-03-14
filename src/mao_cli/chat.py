@@ -202,6 +202,8 @@ class ChatSession:
                 line = line.replace("锘?", "", 1).strip()
             if not line:
                 continue
+            if "/" in line and not line.startswith("/") and line.index("/") <= 4:
+                line = line[line.index("/") :].strip()
             self.session = append_transcript_entry(
                 self.project_root,
                 self.config.runtime_root,
