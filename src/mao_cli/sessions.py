@@ -311,3 +311,52 @@ def replay_lines(session: ChatSessionState, limit: int = 200) -> list[str]:
         if turn.run_dir:
             lines.append(f"assistant> run_dir={turn.run_dir}")
     return lines
+
+
+def export_session_markdown(session: ChatSessionState, limit: int = 2000) -> str:
+    """Render a saved session as a portable markdown export."""
+    lines: list[str] = [
+        f"# Session {session.session_id}",
+        "",
+        f"- mode: {session.mode}",
+        f"- created_at: {session.created_at.isoformat()}",
+        f"- updated_at: {session.updated_at.isoformat()}",
+        f"- config_path: {session.config_path}",
+        f"- with_worktrees: {session.with_worktrees}",
+        "",
+    ]
+
+    if session.turns:
+        lines.append("## Turns")
+        lines.append("")
+        for turn in session.turns[-limit:]:
+            lines.append(f"- [{turn.created_at.isoformat()}] {bounded_text(turn.user_input, limit=120)}")
+            if turn.run_id:
+                lines.append(f"  - run_id: {turn.run_id}")
+            if turn.run_dir:
+                lines.append(f"  - run_dir: {turn.run_dir}")
+            if turn.approved is not None:
+                lines.append(f"  - approved: {turn.approved}")
+            if turn.summary:
+                lines.append(f"  - summary: {bounded_text(turn.summary, limit=200)}")
+            if turn.defects:
+                lines.append(f"  - defects: {bounded_text('; '.join(turn.defects), limit=200)}")
+        lines.append("")
+
+    lines.append("## Transcript")
+    lines.append("")
+    lines.append("```text")
+    for entry in session.transcript[-limit:]:
+        content = entry.content.replace("\r\n", "\n").replace("\r", "\n")
+        for chunk in content.splitlines() or [""]:
+            lines.append(f"{entry.speaker}> {chunk}")
+    lines.append("```")
+    lines.append("")
+
+    if session.notes:
+        lines.append("## Notes")
+        lines.append("")
+        lines.extend(f"- {note}" for note in session.notes[-limit:])
+        lines.append("")
+
+    return "\n".join(lines)

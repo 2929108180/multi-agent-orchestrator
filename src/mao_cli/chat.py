@@ -27,7 +27,7 @@ from mao_cli.registry import (
     register_skill,
     registered_or_discovered_skills,
 )
-from mao_cli.security import validate_requirement
+from mao_cli.security import ensure_project_path, validate_requirement
 from mao_cli.sessions import (
     ApprovalQueueItem,
     ChatSessionState,
@@ -43,6 +43,7 @@ from mao_cli.sessions import (
     load_latest_session,
     load_session,
     list_sessions,
+    export_session_markdown,
     replay_lines,
     select_approval_item,
     update_approval_item,
@@ -92,6 +93,7 @@ CHAT_COMMANDS = {
     "/reject": "Reject the currently selected queued change.",
     "/defer": "Pause the current approval item and come back later.",
     "/last": "Show the latest run directory from this session.",
+    "/export": "Export this session transcript as markdown.",
     "/exit": "Exit the chat session.",
     "/quit": "Exit the chat session.",
 }
@@ -179,7 +181,7 @@ class ChatSession:
             "[magenta]Built-in commands:[/magenta] "
             "/help /status /doctor /mode /team /members /member /history /context /skills /mcp /merge "
             "/skill-import-local /mcp-import-local /grant-skill /grant-mcp "
-            "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /exit",
+            "/register-skill /register-mcp /resume /queue /review /approve /reject /defer /last /export /exit",
             record=False,
         )
 
@@ -359,6 +361,12 @@ class ChatSession:
                 self._say("No run has been executed in this chat session yet.")
                 return False
             self._say(f"last_run={self.last_run_dir}")
+            return False
+
+        if command == "/export":
+            export_path = self._export_session_markdown(argument)
+            # Export helper already records the assistant line into the transcript.
+            self._say(f"exported={export_path}", record=False)
             return False
 
         self._say(f"Unknown command: {line}. Use /help.")
@@ -1076,6 +1084,29 @@ class ChatSession:
         self._say(f"applied_to={target_path}")
         self._say(f"merge_candidate={candidate.candidate_id}")
         self._say(f"merge_registry={target}")
+
+    def _export_session_markdown(self, argument: str) -> Path:
+        runtime_root = self.config.runtime_root
+        default_target = self.project_root / runtime_root / "sessions" / f"{self.session.session_id}.md"
+
+        if argument.strip():
+            target = ensure_project_path(self.project_root, Path(argument.strip()), must_exist=False, label="output")
+        else:
+            target = default_target
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        # Record the export action into the transcript before rendering markdown,
+        # so the export output is included in the exported file.
+        self.session = append_transcript_entry(
+            self.project_root,
+            runtime_root,
+            self.session,
+            speaker="assistant",
+            content=f"exported={target}",
+        )
+        target.write_text(export_session_markdown(self.session), encoding="utf-8")
+        return target
 
     def _resume_session(self) -> None:
         sessions = list_sessions(self.project_root, self.config.runtime_root, limit=20)

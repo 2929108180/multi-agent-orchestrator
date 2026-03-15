@@ -18,11 +18,14 @@
 - `mao mcp import-local`
 - `mao mcp list`
 - `mao mcp show`
+- `mao mcp tools`
 - `mao mcp register`
 - `mao mcp grant`
+- `mao mcp call`
 
 ## Next Improvements
 
 - registry remove/disable commands
 - capability groups
 - more explicit policy UI
+- consistent runtime_root/artifacts_root resolution across CLI/MCP

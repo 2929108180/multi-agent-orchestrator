@@ -69,8 +69,16 @@ def read_project_doc(doc_name: str) -> str:
     return doc_path.read_text(encoding="utf-8")
 
 
-def list_runs(limit: int = 10) -> list[RunListItem]:
-    runs_root = _project_root() / "artifacts" / "runs"
+def list_runs(limit: int = 10, *, config_path: str = "configs/local.example.yaml") -> list[RunListItem]:
+    project_root = _project_root()
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    config = load_config(absolute_config)
+    runs_root = project_root / config.artifacts_root / "runs"
     if not runs_root.exists():
         return []
 
@@ -107,17 +115,31 @@ def list_runs(limit: int = 10) -> list[RunListItem]:
     return items
 
 
-def read_run_summary(run_id: str) -> str:
+def read_run_summary(run_id: str, *, config_path: str = "configs/local.example.yaml") -> str:
     safe_run_id = validate_run_id(run_id)
-    summary_path = _project_root() / "artifacts" / "runs" / safe_run_id / "summary.md"
+    project_root = _project_root()
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    config = load_config(absolute_config)
+    summary_path = project_root / config.artifacts_root / "runs" / safe_run_id / "summary.md"
     if not summary_path.exists():
         raise FileNotFoundError(f"Run summary not found for `{safe_run_id}`.")
     return summary_path.read_text(encoding="utf-8")
 
 
-def list_saved_sessions(limit: int = 10) -> list[SessionListItem]:
+def list_saved_sessions(limit: int = 10, *, config_path: str = "configs/local.example.yaml") -> list[SessionListItem]:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     sessions = list_sessions(project_root, runtime_root, limit=limit)
     return [
         SessionListItem(
@@ -130,52 +152,94 @@ def list_saved_sessions(limit: int = 10) -> list[SessionListItem]:
     ]
 
 
-def read_saved_session(session_id: str) -> str:
+def read_saved_session(session_id: str, *, config_path: str = "configs/local.example.yaml") -> str:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     session = load_session(project_root, runtime_root, session_id)
     return json.dumps(session.model_dump(mode="json"), indent=2)
 
 
-def list_available_skills() -> list[SkillListItem]:
+def list_available_skills(*, config_path: str = "configs/local.example.yaml") -> list[SkillListItem]:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     return [
         SkillListItem(name=entry.name, description=entry.description, path=entry.path)
         for entry in registered_or_discovered_skills(project_root, runtime_root)
     ]
 
 
-def read_available_skill(skill_name: str) -> str:
+def read_available_skill(skill_name: str, *, config_path: str = "configs/local.example.yaml") -> str:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     entry = find_skill_record(project_root, runtime_root, skill_name)
     return json.dumps(entry.model_dump(), indent=2)
 
 
-def list_registered_mcp_servers() -> list[dict[str, str | bool]]:
+def list_registered_mcp_servers(*, config_path: str = "configs/local.example.yaml") -> list[dict[str, str | bool]]:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     return [record.model_dump() for record in load_mcp_registry(project_root, runtime_root)]
 
 
-def read_registered_mcp_server(name: str) -> str:
+def read_registered_mcp_server(name: str, *, config_path: str = "configs/local.example.yaml") -> str:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     record = find_mcp_record(project_root, runtime_root, name)
     return json.dumps(record.model_dump(), indent=2)
 
 
-def write_team_note(note: str, category: str = "general") -> str:
+def write_team_note(note: str, category: str = "general", *, config_path: str = "configs/local.example.yaml") -> str:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     path = append_team_note(project_root, runtime_root, note, category=category)
     return str(path)
 
 
-def write_session_note(session_id: str, note: str) -> str:
+def write_session_note(session_id: str, note: str, *, config_path: str = "configs/local.example.yaml") -> str:
     project_root = _project_root()
-    runtime_root = load_config(project_root / "configs" / "local.example.yaml").runtime_root
+    absolute_config = ensure_project_path(
+        project_root,
+        config_path,
+        must_exist=True,
+        label="config_path",
+    )
+    runtime_root = load_config(absolute_config).runtime_root
     path = append_session_note(project_root, runtime_root, session_id, note)
     return str(path)
 

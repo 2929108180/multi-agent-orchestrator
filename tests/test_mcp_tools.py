@@ -28,7 +28,7 @@ def test_trigger_mock_workflow_returns_run() -> None:
 
 
 def test_list_runs_has_recent_item() -> None:
-    runs = list_runs(limit=5)
+    runs = list_runs(limit=5, config_path="configs/local.example.yaml")
     assert runs
 
 

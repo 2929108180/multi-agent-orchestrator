@@ -1,6 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
+from uuid import uuid4
 
 import yaml
 from typer.testing import CliRunner
@@ -8,7 +9,7 @@ from typer.testing import CliRunner
 from mao_cli.main import app
 from mao_cli.core.models import AgentExchange, WorkflowEvent
 from mao_cli.gitops import create_worker_worktrees
-from mao_cli.orchestrator import execute_workflow, parse_review_verdict, _evaluate_ownership
+from mao_cli.orchestrator import execute_workflow, parse_integration_report, parse_review_verdict, _evaluate_ownership
 
 
 def test_status_command() -> None:
@@ -41,6 +42,7 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
     run_json = run_dirs[0] / "run.json"
     summary = run_dirs[0] / "summary.md"
     payload = json.loads(run_json.read_text(encoding="utf-8"))
+    integration_payload = json.loads((run_dirs[0] / "integration.json").read_text(encoding="utf-8"))
 
     assert summary.exists()
     assert payload["verdicts"][-1]["approved"] is True
@@ -48,6 +50,11 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
     assert payload["plan"]["frontend_task"]["allowed_paths"]
     assert payload["plan"]["backend_task"]["restricted_paths"]
     assert payload["exchanges"][1]["proposed_paths"]
+
+    # Integration artifacts should preserve legacy fields and include structured reports.
+    assert "decisions" in integration_payload
+    assert "reports" in integration_payload
+    assert len(integration_payload["reports"]) == len(payload["verdicts"])
 
 
 def test_validate_command_fails_when_live_env_missing() -> None:
@@ -63,6 +70,59 @@ def test_validate_command_fails_when_live_env_missing() -> None:
 
     assert result.exit_code == 1
     assert "Missing environment variable" in result.stdout
+
+
+def test_parse_integration_report_parses_issue_and_binding() -> None:
+    report = parse_integration_report(
+        "\n".join(
+            [
+                "INTEGRATION_REPORT:",
+                "ROUND: 1",
+                "STATUS: needs_changes",
+                "SUMMARY: Endpoint mismatch.",
+                "",
+                "KEY_FINDINGS:",
+                "- FE uses /a while BE uses /b",
+                "",
+                "BINDING:",
+                "ID: my-binding",
+                "FRONTEND: GET /a",
+                "BACKEND: GET /b",
+                "REQUEST_FIELDS: a,b",
+                "RESPONSE_FIELDS: x,y",
+                "MATCH: no",
+                "NOTES: fix path",
+                "",
+                "ISSUE:",
+                "ID: my-issue",
+                "OWNER: frontend",
+                "SEVERITY: high",
+                "TITLE: Bad path",
+                "SUMMARY: mismatch",
+                "ACTION: update frontend",
+                "",
+                "OPEN_QUESTIONS:",
+                "- none",
+                "",
+                "FILE_TARGETS:",
+                "- shared-contracts/x.json",
+            ]
+        ),
+        round_index=1,
+        model="mock/integration",
+    )
+
+    assert report is not None
+    assert report.round_index == 1
+    assert report.status == "needs_changes"
+    assert report.summary == "Endpoint mismatch."
+    assert report.key_findings
+    assert len(report.bindings) == 1
+    assert report.bindings[0].binding_id == "my-binding"
+    assert report.bindings[0].match is False
+    assert len(report.issues) == 1
+    assert report.issues[0].defect_id == "my-issue"
+    assert report.issues[0].owner == "frontend"
 
 
 def test_parse_review_verdict_with_structured_defect() -> None:
@@ -156,16 +216,39 @@ def test_chat_runs_workflow(tmp_path: Path) -> None:
     assert "Run artifacts saved to:" in result.stdout
 
 
+def test_chat_export_command_writes_markdown(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "chat",
+            "--mock",
+            "--output-dir",
+            str(tmp_path),
+        ],
+        input="/export\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "exported=" in result.stdout
+    exported_line = next(line for line in result.stdout.splitlines() if "exported=" in line)
+    exported_path = Path(exported_line.split("exported=", 1)[1].strip())
+    assert exported_path.exists()
+    text = exported_path.read_text(encoding="utf-8")
+    assert "## Transcript" in text
+    assert "assistant> exported=" in text
+
+
 def test_execute_workflow_emits_events(tmp_path: Path) -> None:
     from mao_cli.config import load_config
 
-    config = load_config(Path("E:/Ai/multi-agent-orchestrator/configs/local.example.yaml"))
+    config = load_config(Path("configs/local.example.yaml"))
     events: list[WorkflowEvent] = []
     execute_workflow(
         requirement="Build a task tracker",
         config=config,
         output_dir=tmp_path,
-        repository_root=Path("E:/Ai/multi-agent-orchestrator"),
+        repository_root=Path("."),
         force_mock=True,
         with_worktrees=False,
         event_handler=events.append,
@@ -176,6 +259,7 @@ def test_execute_workflow_emits_events(tmp_path: Path) -> None:
     assert "architect_started" in event_types
     assert "frontend_started" in event_types
     assert "backend_started" in event_types
+    assert "integration_completed" in event_types
     assert "review_completed" in event_types
     assert event_types[-1] == "workflow_completed"
 
@@ -185,7 +269,7 @@ def test_ownership_enforcement_detects_conflicts() -> None:
     from mao_cli.config import load_config
 
     plan = build_architect_plan("Build a task tracker")
-    config = load_config(Path("E:/Ai/multi-agent-orchestrator/configs/local.example.yaml"))
+    config = load_config(Path("configs/local.example.yaml"))
     frontend_exchange = AgentExchange(
         role="frontend",
         model="mock/frontend",
@@ -216,14 +300,19 @@ def test_ownership_enforcement_detects_conflicts() -> None:
 
 
 def test_chat_history_and_context_with_resumable_session(tmp_path: Path) -> None:
-    config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-chat-config.yaml")
+    config_path = Path(f"runtime/test-chat-config-{uuid4().hex}.yaml")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(
             {
                 "version": 1,
                 "project_name": "multi-agent-orchestrator",
-                "runtime_root": str((tmp_path / "runtime").resolve()),
-                "artifacts_root": str((tmp_path / "artifacts").resolve()),
+                "runtime_root": str(runtime_root.resolve()),
+                "artifacts_root": str(artifacts_root.resolve()),
                 "workflow": {"max_repair_rounds": 1},
                 "providers": {
                     "architect": {"adapter": "mock", "model": "mock/architect"},
@@ -249,14 +338,19 @@ def test_chat_history_and_context_with_resumable_session(tmp_path: Path) -> None
 
 
 def test_chat_resume_command_restores_session(tmp_path: Path) -> None:
-    config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-resume-config.yaml")
+    config_path = Path(f"runtime/test-resume-config-{uuid4().hex}.yaml")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(
             {
                 "version": 1,
                 "project_name": "multi-agent-orchestrator",
-                "runtime_root": str((tmp_path / "runtime").resolve()),
-                "artifacts_root": str((tmp_path / "artifacts").resolve()),
+                "runtime_root": str(runtime_root.resolve()),
+                "artifacts_root": str(artifacts_root.resolve()),
                 "workflow": {"max_repair_rounds": 1},
                 "providers": {
                     "architect": {"adapter": "mock", "model": "mock/architect"},
@@ -347,14 +441,19 @@ def test_chat_member_toggle_disables_backend() -> None:
 
 
 def test_chat_live_preflight_fails_cleanly(tmp_path: Path) -> None:
-    config_path = Path("E:/Ai/multi-agent-orchestrator/runtime/test-live-config.yaml")
+    config_path = Path(f"runtime/test-live-config-{uuid4().hex}.yaml")
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    artifacts_root = tmp_path / "artifacts"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
         yaml.safe_dump(
             {
                 "version": 1,
                 "project_name": "multi-agent-orchestrator",
-                "runtime_root": str((tmp_path / "runtime").resolve()),
-                "artifacts_root": str((tmp_path / "artifacts").resolve()),
+                "runtime_root": str(runtime_root.resolve()),
+                "artifacts_root": str(artifacts_root.resolve()),
                 "workflow": {"max_repair_rounds": 1},
                 "providers": {
                     "architect": {"adapter": "openai", "model": "openai/gpt-5.4", "api_key_env": "OPENAI_API_KEY"},

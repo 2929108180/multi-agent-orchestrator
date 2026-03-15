@@ -7,6 +7,9 @@
 - resume by id
 - transcript replay
 - layered memory
+- export session transcript to markdown
+  - CLI: `mao session export <session_id> [-o output.md] [-c config.yaml]`
+  - Chat: `/export [relative/path.md]`
 
 ## Memory Layers
 
@@ -17,5 +20,5 @@
 ## Next Improvements
 
 - full transcript fidelity replay
-- session export/import
+- session import
 - better session search

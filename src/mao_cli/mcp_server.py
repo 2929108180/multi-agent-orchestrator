@@ -35,12 +35,20 @@ class RunListInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     limit: int = Field(default=10, ge=1, le=20, description="Maximum number of runs to return.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls artifacts_root).",
+    )
 
 
 class RunSummaryInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     run_id: str = Field(..., min_length=4, description="Run identifier, for example `efd86dfab9c5`.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls artifacts_root).",
+    )
 
 
 class TriggerWorkflowInput(BaseModel):
@@ -61,18 +69,39 @@ class SessionListInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     limit: int = Field(default=10, ge=1, le=20, description="Maximum number of saved sessions to return.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls runtime_root).",
+    )
 
 
 class SessionInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     session_id: str = Field(..., min_length=4, description="Saved session identifier.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls runtime_root).",
+    )
+
+
+class SkillListInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls runtime_root).",
+    )
 
 
 class SkillInput(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     skill_name: str = Field(..., min_length=1, description="Skill name to read.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls runtime_root).",
+    )
 
 
 class TeamNoteInput(BaseModel):
@@ -80,6 +109,10 @@ class TeamNoteInput(BaseModel):
 
     note: str = Field(..., min_length=1, description="Team note content to append under runtime/team.")
     category: str = Field(default="general", min_length=1, description="Category name for the team note file.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls runtime_root).",
+    )
 
 
 class SessionNoteInput(BaseModel):
@@ -87,6 +120,10 @@ class SessionNoteInput(BaseModel):
 
     session_id: str = Field(..., min_length=4, description="Saved session identifier.")
     note: str = Field(..., min_length=1, description="Note content to append to the saved session.")
+    config_path: str = Field(
+        default="configs/local.example.yaml",
+        description="Relative or absolute path to a workflow config (controls runtime_root).",
+    )
 
 
 @mcp.tool(
@@ -131,7 +168,7 @@ def mao_read_project_doc(params: DocInput) -> str:
 )
 def mao_list_runs(params: RunListInput) -> list[dict[str, str | bool | None]]:
     """List the most recent workflow runs and their approval state."""
-    return [item.model_dump() for item in list_runs(limit=params.limit)]
+    return [item.model_dump() for item in list_runs(limit=params.limit, config_path=params.config_path)]
 
 
 @mcp.tool(
@@ -146,7 +183,7 @@ def mao_list_runs(params: RunListInput) -> list[dict[str, str | bool | None]]:
 )
 def mao_read_run_summary(params: RunSummaryInput) -> str:
     """Read the markdown summary for a saved workflow run."""
-    return read_run_summary(params.run_id)
+    return read_run_summary(params.run_id, config_path=params.config_path)
 
 
 @mcp.tool(
@@ -161,7 +198,10 @@ def mao_read_run_summary(params: RunSummaryInput) -> str:
 )
 def mao_list_sessions(params: SessionListInput) -> list[dict[str, str | int]]:
     """List saved local chat sessions."""
-    return [item.model_dump() for item in list_saved_sessions(limit=params.limit)]
+    return [
+        item.model_dump()
+        for item in list_saved_sessions(limit=params.limit, config_path=params.config_path)
+    ]
 
 
 @mcp.tool(
@@ -176,7 +216,7 @@ def mao_list_sessions(params: SessionListInput) -> list[dict[str, str | int]]:
 )
 def mao_read_session(params: SessionInput) -> str:
     """Read one saved local chat session as JSON."""
-    return read_saved_session(params.session_id)
+    return read_saved_session(params.session_id, config_path=params.config_path)
 
 
 @mcp.tool(
@@ -189,9 +229,9 @@ def mao_read_session(params: SessionInput) -> str:
         "openWorldHint": False,
     },
 )
-def mao_list_skills() -> list[dict[str, str]]:
+def mao_list_skills(params: SkillListInput) -> list[dict[str, str]]:
     """List discovered local skills available for team mode."""
-    return [item.model_dump() for item in list_available_skills()]
+    return [item.model_dump() for item in list_available_skills(config_path=params.config_path)]
 
 
 @mcp.tool(
@@ -206,7 +246,7 @@ def mao_list_skills() -> list[dict[str, str]]:
 )
 def mao_read_skill(params: SkillInput) -> str:
     """Read a single discovered skill entry."""
-    return read_available_skill(params.skill_name)
+    return read_available_skill(params.skill_name, config_path=params.config_path)
 
 
 @mcp.tool(
@@ -241,7 +281,11 @@ def mao_trigger_mock_workflow(params: TriggerWorkflowInput) -> dict[str, str | b
 )
 def mao_write_team_note(params: TeamNoteInput) -> str:
     """Append a safe team note under runtime/team for local coordination."""
-    return write_team_note(params.note, category=params.category)
+    return write_team_note(
+        note=params.note,
+        category=params.category,
+        config_path=params.config_path,
+    )
 
 
 @mcp.tool(
@@ -256,7 +300,11 @@ def mao_write_team_note(params: TeamNoteInput) -> str:
 )
 def mao_write_session_note(params: SessionNoteInput) -> str:
     """Append a note to a saved local chat session."""
-    return write_session_note(params.session_id, params.note)
+    return write_session_note(
+        session_id=params.session_id,
+        note=params.note,
+        config_path=params.config_path,
+    )
 
 
 def run_mcp_server(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:

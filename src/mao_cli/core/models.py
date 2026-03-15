@@ -10,6 +10,7 @@ AgentRole = Literal["architect", "frontend", "backend", "integration", "reviewer
 DefectOwner = Literal["frontend", "backend", "shared"]
 DefectSeverity = Literal["low", "medium", "high"]
 IntegrationDecisionStatus = Literal["auto_accepted", "needs_confirmation", "rejected"]
+IntegrationReportStatus = Literal["ok", "needs_changes"]
 
 
 class WorkerTask(BaseModel):
@@ -19,6 +20,8 @@ class WorkerTask(BaseModel):
     acceptance_criteria: list[str] = Field(default_factory=list)
     allowed_paths: list[str] = Field(default_factory=list)
     restricted_paths: list[str] = Field(default_factory=list)
+    # Optional line-based response protocol. When provided, it is appended to the worker prompt.
+    response_protocol: list[str] = Field(default_factory=list)
 
 
 class ArchitectPlan(BaseModel):
@@ -87,6 +90,28 @@ class IntegrationDecision(BaseModel):
     proposal_path: str = ""
 
 
+class IntegrationBinding(BaseModel):
+    binding_id: str
+    frontend: str = ""
+    backend: str = ""
+    request_fields: list[str] = Field(default_factory=list)
+    response_fields: list[str] = Field(default_factory=list)
+    match: bool = False
+    notes: str = ""
+
+
+class IntegrationReport(BaseModel):
+    round_index: int = 0
+    status: IntegrationReportStatus = "ok"
+    summary: str = ""
+    key_findings: list[str] = Field(default_factory=list)
+    bindings: list[IntegrationBinding] = Field(default_factory=list)
+    issues: list[ReviewDefect] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    raw_text: str = ""
+    model: str = ""
+
+
 class WorkflowRun(BaseModel):
     run_id: str = Field(default_factory=lambda: uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -97,3 +122,4 @@ class WorkflowRun(BaseModel):
     workspaces: list[WorkerWorkspaceInfo] = Field(default_factory=list)
     integration_notes: list[str] = Field(default_factory=list)
     integration_decisions: list[IntegrationDecision] = Field(default_factory=list)
+    integration_reports: list[IntegrationReport] = Field(default_factory=list)

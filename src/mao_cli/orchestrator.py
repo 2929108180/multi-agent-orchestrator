@@ -12,6 +12,8 @@ from mao_cli.core.models import (
     AgentExchange,
     ArchitectPlan,
     IntegrationDecision,
+    IntegrationBinding,
+    IntegrationReport,
     ReviewDefect,
     ReviewVerdict,
     WorkerTask,
@@ -23,6 +25,40 @@ from mao_cli.gitops import WorkerWorkspace, create_worker_worktrees, write_worke
 from mao_cli.mergeflow import MergeCandidate
 from mao_cli.providers import ModelGateway
 from mao_cli.security import bounded_text, validate_requirement
+
+
+INTEGRATION_PROTOCOL_V1 = [
+    "INTEGRATION_REPORT:",
+    "ROUND: <int>",
+    "STATUS: ok|needs_changes",
+    "SUMMARY: one line",
+    "",
+    "KEY_FINDINGS:",
+    "- ...",
+    "",
+    "BINDING:",
+    "ID: stable-binding-id",
+    "FRONTEND: ...",
+    "BACKEND: ...",
+    "REQUEST_FIELDS: a,b,c",
+    "RESPONSE_FIELDS: x,y,z",
+    "MATCH: yes|no",
+    "NOTES: ...",
+    "",
+    "ISSUE:",
+    "ID: stable-issue-id",
+    "OWNER: frontend|backend|shared",
+    "SEVERITY: low|medium|high",
+    "TITLE: ...",
+    "SUMMARY: ...",
+    "ACTION: ...",
+    "",
+    "OPEN_QUESTIONS:",
+    "- ...",
+    "",
+    "FILE_TARGETS:",
+    "- relative/path.ext",
+]
 
 
 def build_architect_plan(requirement: str) -> ArchitectPlan:
@@ -118,38 +154,48 @@ def build_architect_plan(requirement: str) -> ArchitectPlan:
                 "frontend/**",
                 "backend/**",
             ],
+            response_protocol=INTEGRATION_PROTOCOL_V1,
         ),
         review_focus=review_focus,
     )
 
 
 def _render_worker_prompt(plan: ArchitectPlan, task: WorkerTask) -> str:
-    return _render_prompt_sections(
-        [
-            f"Role: {task.role}",
-            f"Objective: {task.objective}",
-            "Shared contract:",
-            *[f"- {item}" for item in plan.shared_contract],
-            "Deliverables:",
-            *[f"- {item}" for item in task.deliverables],
-            "Acceptance criteria:",
-            *[f"- {item}" for item in task.acceptance_criteria],
-            "Allowed paths:",
-            *[f"- {item}" for item in task.allowed_paths],
-            "Restricted paths:",
-            *[f"- {item}" for item in task.restricted_paths],
-            "Do not change files outside your owned paths. Shared contract changes must be escalated to integration.",
-            "Respond with a concise but concrete implementation proposal.",
-            "At the end, include:",
-            "FILE_TARGETS:",
-            "- relative/path/example.ext",
-        ]
-    )
+    sections: list[str] = [
+        f"Role: {task.role}",
+        f"Objective: {task.objective}",
+        "Shared contract:",
+        *[f"- {item}" for item in plan.shared_contract],
+        "Deliverables:",
+        *[f"- {item}" for item in task.deliverables],
+        "Acceptance criteria:",
+        *[f"- {item}" for item in task.acceptance_criteria],
+        "Allowed paths:",
+        *[f"- {item}" for item in task.allowed_paths],
+        "Restricted paths:",
+        *[f"- {item}" for item in task.restricted_paths],
+        "Do not change files outside your owned paths. Shared contract changes must be escalated to integration.",
+        "Respond with a concise but concrete implementation proposal.",
+    ]
+
+    if task.response_protocol:
+        sections.extend(["Return this exact format:", *task.response_protocol])
+    else:
+        sections.extend(
+            [
+                "At the end, include:",
+                "FILE_TARGETS:",
+                "- relative/path/example.ext",
+            ]
+        )
+
+    return _render_prompt_sections(sections)
 
 
 def _render_review_prompt(
     requirement: str,
     plan: ArchitectPlan,
+    integration_report: str,
     frontend_response: str,
     backend_response: str,
     conversation_context: str = "",
@@ -177,9 +223,11 @@ def _render_review_prompt(
             contract,
             "Review focus:",
             focus,
-            "Frontend response:",
+            "Integration report (PRIMARY):",
+            integration_report,
+            "Frontend response (REFERENCE):",
             frontend_response,
-            "Backend response:",
+            "Backend response (REFERENCE):",
             backend_response,
             "Return this exact format:",
             "APPROVED: yes|no",
@@ -194,6 +242,173 @@ def _render_review_prompt(
         ]
     )
     return _render_prompt_sections(sections)
+
+
+def _normalize_csv_fields(value: str) -> list[str]:
+    stripped = value.strip()
+    if not stripped:
+        return []
+    return [item.strip() for item in stripped.split(",") if item.strip()]
+
+
+def parse_integration_report(
+    integration_response: str,
+    *,
+    round_index: int = 0,
+    model: str = "",
+) -> IntegrationReport | None:
+    raw = bounded_text(integration_response, limit=8000)
+    if not raw.strip():
+        return None
+
+    status: str = "ok"
+    summary: str = ""
+    key_findings: list[str] = []
+    bindings: list[IntegrationBinding] = []
+    issues: list[ReviewDefect] = []
+    open_questions: list[str] = []
+
+    mode = ""
+    current_binding: dict[str, str] = {}
+    current_issue: dict[str, str] = {}
+
+    def flush_binding() -> None:
+        nonlocal current_binding
+        if not current_binding:
+            return
+        binding_id = current_binding.get("id") or f"binding-{len(bindings)+1}"
+        match_value = (current_binding.get("match") or "").strip().lower()
+        bindings.append(
+            IntegrationBinding(
+                binding_id=binding_id,
+                frontend=current_binding.get("frontend", ""),
+                backend=current_binding.get("backend", ""),
+                request_fields=_normalize_csv_fields(current_binding.get("request_fields", "")),
+                response_fields=_normalize_csv_fields(current_binding.get("response_fields", "")),
+                match=match_value in {"yes", "true", "1"},
+                notes=current_binding.get("notes", ""),
+            )
+        )
+        current_binding = {}
+
+    def flush_issue() -> None:
+        nonlocal current_issue
+        if not current_issue:
+            return
+        defect_id = current_issue.get("id") or f"integration-issue-{len(issues)+1}"
+        owner = (current_issue.get("owner") or "shared").strip().lower()
+        if owner not in {"frontend", "backend", "shared"}:
+            owner = "shared"
+        severity = (current_issue.get("severity") or "medium").strip().lower()
+        if severity not in {"low", "medium", "high"}:
+            severity = "medium"
+        issues.append(
+            ReviewDefect(
+                defect_id=defect_id,
+                owner=owner,  # type: ignore[arg-type]
+                severity=severity,  # type: ignore[arg-type]
+                title=current_issue.get("title") or "Integration issue",
+                summary=current_issue.get("summary") or "",
+                action=current_issue.get("action") or "",
+            )
+        )
+        current_issue = {}
+
+    saw_header = False
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if line == "INTEGRATION_REPORT:":
+            saw_header = True
+            mode = ""
+            continue
+
+        if not saw_header:
+            continue
+
+        if line == "FILE_TARGETS:":
+            flush_binding()
+            flush_issue()
+            break
+
+        if line == "BINDING:":
+            flush_binding()
+            flush_issue()
+            mode = "binding"
+            continue
+
+        if line == "ISSUE:":
+            flush_binding()
+            flush_issue()
+            mode = "issue"
+            continue
+
+        if line == "KEY_FINDINGS:":
+            flush_binding()
+            flush_issue()
+            mode = "key_findings"
+            continue
+
+        if line == "OPEN_QUESTIONS:":
+            flush_binding()
+            flush_issue()
+            mode = "open_questions"
+            continue
+
+        if line.startswith("ROUND:"):
+            # trust the orchestrator-provided round_index for storage; accept model value as informational only.
+            mode = ""
+            continue
+
+        if line.startswith("STATUS:"):
+            value = line.split(":", 1)[1].strip().lower()
+            if value in {"ok", "needs_changes"}:
+                status = value
+            mode = ""
+            continue
+
+        if line.startswith("SUMMARY:") and mode != "issue":
+            summary = bounded_text(line.split(":", 1)[1].strip())
+            mode = ""
+            continue
+
+        if mode in {"key_findings", "open_questions"} and line.startswith("-"):
+            item = bounded_text(line.lstrip("- ").strip())
+            if mode == "key_findings":
+                key_findings.append(item)
+            else:
+                open_questions.append(item)
+            continue
+
+        if mode in {"binding", "issue"} and ":" in line:
+            key, value = line.split(":", 1)
+            normalized_key = key.strip().lower()
+            normalized_value = bounded_text(value.strip())
+            if mode == "binding":
+                current_binding[normalized_key] = normalized_value
+            else:
+                current_issue[normalized_key] = normalized_value
+            continue
+
+    flush_binding()
+    flush_issue()
+
+    if not summary:
+        summary = "Integration completed with unstructured output."
+
+    return IntegrationReport(
+        round_index=round_index,
+        status=status,  # type: ignore[arg-type]
+        summary=summary,
+        key_findings=key_findings,
+        bindings=bindings,
+        issues=issues,
+        open_questions=open_questions,
+        raw_text=raw,
+        model=model,
+    )
 
 
 def parse_review_verdict(review_response: str) -> ReviewVerdict:
@@ -516,12 +731,14 @@ def execute_workflow(
     run.exchanges.extend([frontend_exchange, backend_exchange])
     _write_workspace_notes(run, workspace_map, frontend_exchange, backend_exchange)
 
+    integration_exchange = None
     if "integration" in active_roles:
         _emit_event(
             event_handler,
             "integration_started",
             role="integration",
             run_id=run.run_id,
+            round_index=0,
             message=f"calling integration... objective={_summarize_text(plan.integration_task.objective)}",
             model=config.providers["integration"].model,
         )
@@ -542,15 +759,26 @@ def execute_workflow(
             "integration_completed",
             role="integration",
             run_id=run.run_id,
+            round_index=0,
             message=_summarize_text(integration_exchange.response),
             model=integration_exchange.model,
         )
 
+    integration_report_text = integration_exchange.response if integration_exchange else ""
+    parsed_integration_report = parse_integration_report(
+        integration_report_text,
+        round_index=0,
+        model=integration_exchange.model if integration_exchange else "",
+    )
+    if parsed_integration_report is not None:
+        run.integration_reports.append(parsed_integration_report)
+
     review_prompt = _render_review_prompt(
         requirement=requirement,
         plan=plan,
+        integration_report=integration_report_text,
         frontend_response=frontend_exchange.response,
-        backend_response=backend_exchange.response + "\n\nIntegration response:\n" + integration_exchange.response,
+        backend_response=backend_exchange.response,
         conversation_context=conversation_context,
         team_context=team_context,
         review_memory=review_memory,
@@ -669,9 +897,57 @@ def execute_workflow(
                 )
 
         _write_workspace_notes(run, workspace_map, current_frontend_exchange, current_backend_exchange)
+        if "integration" in active_roles:
+            _emit_event(
+                event_handler,
+                "integration_started",
+                role="integration",
+                run_id=run.run_id,
+                round_index=repair_round,
+                message=f"calling integration... objective={_summarize_text(plan.integration_task.objective)}",
+                model=config.providers["integration"].model,
+            )
+            integration_context = _render_prompt_sections(
+                [
+                    "Frontend response:",
+                    current_frontend_exchange.response,
+                    "Backend response:",
+                    current_backend_exchange.response,
+                    "Shared contract:",
+                    "\n".join(f"- {item}" for item in plan.shared_contract),
+                ]
+            )
+            integration_exchange = _call(
+                "integration",
+                integration_prompt + "\n\n" + integration_context,
+                repair_round,
+            )
+            run.exchanges.append(integration_exchange)
+            _emit_event(
+                event_handler,
+                "integration_completed",
+                role="integration",
+                run_id=run.run_id,
+                round_index=repair_round,
+                message=_summarize_text(integration_exchange.response),
+                model=integration_exchange.model,
+            )
+        else:
+            integration_exchange = None
+
+        integration_report_text = integration_exchange.response if integration_exchange else ""
+        parsed_integration_report = parse_integration_report(
+            integration_report_text,
+            round_index=repair_round,
+            model=integration_exchange.model if integration_exchange else "",
+        )
+        if parsed_integration_report is not None:
+            run.integration_reports.append(parsed_integration_report)
+
         review_prompt = _render_review_prompt(
             requirement=requirement,
             plan=plan,
+            integration_report=integration_report_text,
             frontend_response=current_frontend_exchange.response,
             backend_response=current_backend_exchange.response,
             conversation_context=conversation_context,
@@ -1111,12 +1387,18 @@ def _write_integration_outputs(run: WorkflowRun, run_dir: Path, repository_root:
     integration_payload = {
         "notes": run.integration_notes,
         "decisions": [decision.model_dump() for decision in run.integration_decisions],
+        "reports": [report.model_dump() for report in run.integration_reports],
     }
     (run_dir / "integration.json").write_text(
         json.dumps(integration_payload, indent=2),
         encoding="utf-8",
     )
     lines = ["# Integration Decisions", ""]
+    if run.integration_reports:
+        lines.append("## Integration Reports")
+        for report in run.integration_reports:
+            lines.append(f"- Round {report.round_index}: [{report.status}] {report.summary}")
+        lines.append("")
     if run.integration_notes:
         lines.append("## Notes")
         lines.extend(f"- {note}" for note in run.integration_notes)

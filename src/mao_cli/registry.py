@@ -151,12 +151,14 @@ def save_mcp_registry(project_root: Path, runtime_root: str, records: list[MCPSe
 
 
 def import_local_mcp(project_root: Path, runtime_root: str) -> Path:
+    import sys
+
     records = [
         MCPServerRecord(
             name="mao_mcp",
             transport="stdio",
-            command="mao",
-            args=["mcp-serve", "--transport", "stdio"],
+            command=sys.executable,
+            args=["-m", "mao_cli.main", "mcp-serve", "--transport", "stdio"],
             source="local-import",
             tools=[
                 MCPToolRecord(name="mao_project_status", description="Read current project status."),

@@ -3,9 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+import json
 
 from mao_cli.chat import ChatSession
 from mao_cli.config import load_config
+from mao_cli.mcp_client import (
+    call_mcp_tool_sync,
+    list_mcp_tools_sync,
+    parse_arguments_file,
+    parse_arguments_json,
+)
 from mao_cli.mcp_server import run_mcp_server
 from mao_cli.mergeflow import list_merge_candidates
 from mao_cli.registry import (
@@ -23,6 +30,7 @@ from mao_cli.registry import (
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import inspect_providers
 from mao_cli.security import ensure_project_path, validate_requirement
+from mao_cli.sessions import export_session_markdown, load_session
 from mao_cli.terminal import create_console, create_table
 
 app = typer.Typer(
@@ -34,10 +42,12 @@ skills_app = typer.Typer(help="Manage skill registry entries.")
 mcp_app = typer.Typer(help="Manage MCP registry entries.")
 policy_app = typer.Typer(help="Inspect approval and capability policy.")
 merge_app = typer.Typer(help="Inspect merge candidates.")
+session_app = typer.Typer(help="Manage saved chat sessions.")
 app.add_typer(skills_app, name="skills")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(policy_app, name="policy")
 app.add_typer(merge_app, name="merge")
+app.add_typer(session_app, name="session")
 
 
 def _project_root() -> Path:
@@ -57,8 +67,10 @@ def _resolve_config_path(project_root: Path, config: Path) -> Path:
         raise typer.BadParameter(str(exc)) from exc
 
 
-def _runtime_root(project_root: Path) -> str:
-    return load_config(project_root / "configs" / "local.example.yaml").runtime_root
+def _runtime_root(project_root: Path, config: Path | None = None) -> str:
+    config_path = config or Path("configs/local.example.yaml")
+    resolved = _resolve_config_path(project_root, config_path)
+    return load_config(resolved).runtime_root
 
 
 @app.command()
@@ -317,10 +329,17 @@ def mcp_serve(
 
 
 @skills_app.command("import-local")
-def skills_import_local() -> None:
+def skills_import_local(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    )
+) -> None:
     """Import locally discovered skills into the MAO registry."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     target = import_local_skills(project_root, runtime_root)
     records = load_skill_registry(project_root, runtime_root)
     table = create_table("Imported Skills")
@@ -335,10 +354,17 @@ def skills_import_local() -> None:
 
 
 @skills_app.command("list")
-def skills_list() -> None:
+def skills_list(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    )
+) -> None:
     """List registered skills."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     records = load_skill_registry(project_root, runtime_root)
     table = create_table("Skill Registry")
     table.add_column("Name")
@@ -351,10 +377,18 @@ def skills_list() -> None:
 
 
 @skills_app.command("show")
-def skills_show(name: str = typer.Argument(..., help="Skill name.")) -> None:
+def skills_show(
+    name: str = typer.Argument(..., help="Skill name."),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
     """Show one registered skill."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     record = find_skill_record(project_root, runtime_root, name)
     console.print(
         "\n".join(
@@ -376,10 +410,16 @@ def skills_register(
     name: str = typer.Argument(...),
     description: str = typer.Option(..., "--description"),
     path: str = typer.Option(..., "--path"),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
 ) -> None:
     """Register or update one skill in the registry."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     target = register_skill(project_root, runtime_root, name=name, description=description, path=path)
     console.print(f"registered={name}")
     console.print(f"registry={target}")
@@ -390,20 +430,33 @@ def skills_grant(
     name: str = typer.Argument(...),
     role: str | None = typer.Option(None, "--role"),
     model: str | None = typer.Option(None, "--model"),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
 ) -> None:
     """Grant a role or model access to a registered skill."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     target = assign_skill_access(project_root, runtime_root, name=name, role=role, model=model)
     console.print(f"granted={name}")
     console.print(f"registry={target}")
 
 
 @mcp_app.command("import-local")
-def mcp_import_local() -> None:
+def mcp_import_local(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    )
+) -> None:
     """Import locally known MCP servers into the MAO registry."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     target = import_local_mcp(project_root, runtime_root)
     records = load_mcp_registry(project_root, runtime_root)
     table = create_table("Imported MCP Servers")
@@ -419,10 +472,17 @@ def mcp_import_local() -> None:
 
 
 @mcp_app.command("list")
-def mcp_list() -> None:
+def mcp_list(
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    )
+) -> None:
     """List registered MCP servers."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     records = load_mcp_registry(project_root, runtime_root)
     table = create_table("MCP Registry")
     table.add_column("Server")
@@ -435,10 +495,18 @@ def mcp_list() -> None:
 
 
 @mcp_app.command("show")
-def mcp_show(name: str = typer.Argument(..., help="MCP server name.")) -> None:
+def mcp_show(
+    name: str = typer.Argument(..., help="MCP server name."),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
     """Show one registered MCP server."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     record = find_mcp_record(project_root, runtime_root, name)
     console.print(
         "\n".join(
@@ -465,10 +533,16 @@ def mcp_register(
     command: str = typer.Option("", "--command"),
     url: str = typer.Option("", "--url"),
     args: str = typer.Option("", "--args", help="Space-separated arguments for stdio command."),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
 ) -> None:
     """Register or update one MCP server in the registry."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     arg_list = [part for part in args.split(" ") if part]
     target = register_mcp_server(
         project_root,
@@ -488,13 +562,94 @@ def mcp_grant(
     name: str = typer.Argument(...),
     role: str | None = typer.Option(None, "--role"),
     model: str | None = typer.Option(None, "--model"),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
 ) -> None:
     """Grant a role or model access to a registered MCP server."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     target = assign_mcp_access(project_root, runtime_root, name=name, role=role, model=model)
     console.print(f"granted={name}")
     console.print(f"registry={target}")
+
+
+@mcp_app.command("call")
+def mcp_call(
+    server: str = typer.Argument(..., help="MCP server name."),
+    tool: str = typer.Argument(..., help="Tool name to call."),
+    args: str = typer.Option(
+        "",
+        "--args",
+        help="Tool arguments as inline JSON string.",
+    ),
+    args_file: Path | None = typer.Option(
+        None,
+        "--args-file",
+        help="Path to a JSON file containing tool arguments.",
+    ),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
+    """Call a registered MCP tool and print the result."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root, config)
+    record = find_mcp_record(project_root, runtime_root, server)
+
+    if not record.enabled:
+        raise typer.BadParameter(f"MCP server `{server}` is disabled in the registry.")
+
+    if args and args_file is not None:
+        raise typer.BadParameter("Use either --args or --args-file, not both.")
+
+    arguments = None
+    if args_file is not None:
+        # Keep args_file inside project root for safety.
+        resolved = ensure_project_path(project_root, args_file, must_exist=True, label="args_file")
+        arguments = parse_arguments_file(resolved)
+    elif args:
+        arguments = parse_arguments_json(args)
+
+    output = call_mcp_tool_sync(record, tool=tool, arguments=arguments)
+    if output.text:
+        console.print(output.text)
+    elif output.structured is not None:
+        console.print_json(data=output.structured)
+    else:
+        console.print("(no content)")
+
+
+@mcp_app.command("tools")
+def mcp_tools(
+    server: str = typer.Argument(..., help="MCP server name."),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
+    """List tools exposed by a registered MCP server."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root, config)
+    record = find_mcp_record(project_root, runtime_root, server)
+
+    tools = list_mcp_tools_sync(record)
+    table = create_table(f"MCP Tools: {record.name}")
+    table.add_column("Name")
+    table.add_column("Description")
+    table.add_column("Schema")
+    for item in tools:
+        schema_text = json.dumps(item.input_schema, ensure_ascii=False) if item.input_schema else ""
+        table.add_row(item.name, item.description or "", schema_text)
+    console.print(table)
 
 
 @policy_app.command("show")
@@ -536,10 +691,18 @@ def policy_show(
 
 
 @merge_app.command("list")
-def merge_list(limit: int = typer.Option(20, "--limit", min=1, max=200)) -> None:
+def merge_list(
+    limit: int = typer.Option(20, "--limit", min=1, max=200),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
     """List merge candidates stored by MAO."""
     project_root = _project_root()
-    runtime_root = _runtime_root(project_root)
+    runtime_root = _runtime_root(project_root, config)
     candidates = list_merge_candidates(project_root, runtime_root, limit=limit)
     table = create_table("Merge Candidates")
     table.add_column("Candidate")
@@ -558,6 +721,40 @@ def merge_list(limit: int = typer.Option(20, "--limit", min=1, max=200)) -> None
             str(item.shared_file),
         )
     console.print(table)
+
+
+@session_app.command("export")
+def session_export(
+    session_id: str = typer.Argument(..., help="Saved session id."),
+    output: Path = typer.Option(
+        Path(""),
+        "--output",
+        "-o",
+        help="Output markdown path. Defaults to runtime/sessions/<id>.md",
+    ),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
+    """Export a saved chat session transcript as markdown."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root, config)
+    session = load_session(project_root, runtime_root, session_id)
+    markdown = export_session_markdown(session)
+
+    target = output
+    if not str(target):
+        target = project_root / runtime_root / "sessions" / f"{session_id}.md"
+    else:
+        # Keep exports inside project root.
+        target = ensure_project_path(project_root, target, must_exist=False, label="output")
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+    target.write_text(markdown, encoding="utf-8")
+    console.print(f"exported={target}")
 
 
 if __name__ == "__main__":

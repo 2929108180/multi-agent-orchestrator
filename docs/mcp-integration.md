@@ -40,4 +40,6 @@ Expose the current project state and workflow entry points through a local MCP s
 
 - The current MCP slice is intentionally local-first.
 - It does not replace the CLI.
+- MCP tools that read sessions/skills/runs accept an optional `config_path` to ensure consistent `runtime_root` and `artifacts_root` resolution.
+- The CLI can call registered MCP tools via `mao mcp call`.
 - It creates a stable seam for team coordination, local memory, and future Git/file tools.

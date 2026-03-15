@@ -282,25 +282,90 @@ class ModelGateway:
                 "- backend/tasks_api.py\n"
                 "- api/tasks_routes.py"
             )
-        if role == "reviewer":
+        if role == "integration":
+            # Minimal structured integration report for mock workflows.
             if "/api/task-items" in prompt and "GET /api/tasks" in prompt:
                 return "\n".join(
                     [
+                        "INTEGRATION_REPORT:",
+                        "ROUND: 0",
+                        "STATUS: needs_changes",
+                        "SUMMARY: Frontend and backend endpoints are inconsistent.",
+                        "",
+                        "KEY_FINDINGS:",
+                        "- Frontend calls /api/task-items but backend exposes /api/tasks.",
+                        "",
+                        "BINDING:",
+                        "ID: tasks-api",
+                        "FRONTEND: GET/POST /api/task-items",
+                        "BACKEND: GET/POST /api/tasks",
+                        "REQUEST_FIELDS: title,status,assignee",
+                        "RESPONSE_FIELDS: id,title,status,assignee,updatedAt",
+                        "MATCH: no",
+                        "NOTES: Align frontend route to /api/tasks.",
+                        "",
+                        "ISSUE:",
+                        "ID: api-path-mismatch",
+                        "OWNER: frontend",
+                        "SEVERITY: high",
+                        "TITLE: API path mismatch",
+                        "SUMMARY: Frontend uses /api/task-items while backend uses /api/tasks.",
+                        "ACTION: Update frontend to call /api/tasks.",
+                        "",
+                        "OPEN_QUESTIONS:",
+                        "- None",
+                        "",
+                        "FILE_TARGETS:",
+                        "- shared-contracts/tasks.schema.json",
+                    ]
+                )
+            return "\n".join(
+                [
+                    "INTEGRATION_REPORT:",
+                    "ROUND: 0",
+                    "STATUS: ok",
+                    "SUMMARY: Frontend and backend are aligned on API shape.",
+                    "",
+                    "KEY_FINDINGS:",
+                    "- Endpoint names and request/response fields match.",
+                    "",
+                    "BINDING:",
+                    "ID: tasks-api",
+                    "FRONTEND: GET/POST /api/tasks",
+                    "BACKEND: GET/POST /api/tasks",
+                    "REQUEST_FIELDS: title,status,assignee",
+                    "RESPONSE_FIELDS: id,title,status,assignee,updatedAt",
+                    "MATCH: yes",
+                    "NOTES: Keep this contract stable.",
+                    "",
+                    "OPEN_QUESTIONS:",
+                    "- None",
+                    "",
+                    "FILE_TARGETS:",
+                    "- shared-contracts/tasks.schema.json",
+                ]
+            )
+
+        if role == "reviewer":
+            # Reviewer should primarily rely on the Integration report.
+            if "Integration report (PRIMARY):" in prompt and "MATCH: no" in prompt:
+                return "\n".join(
+                    [
                         "APPROVED: no",
-                        "SUMMARY: Frontend and backend endpoint names are inconsistent.",
+                        "SUMMARY: Integration reports endpoint mismatch between FE and BE.",
                         "DEFECT:",
                         "ID: api-path-mismatch",
                         "OWNER: frontend",
                         "SEVERITY: high",
                         "TITLE: API path mismatch",
-                        "SUMMARY: Frontend uses `/api/task-items` while backend exposes `/api/tasks`.",
-                        "ACTION: Change the frontend integration to `/api/tasks`.",
+                        "SUMMARY: Integration reports frontend uses /api/task-items while backend exposes /api/tasks.",
+                        "ACTION: Change the frontend integration to /api/tasks.",
                     ]
                 )
             return "\n".join(
                 [
                     "APPROVED: yes",
-                    "SUMMARY: Frontend and backend are aligned on API shape and states.",
+                    "SUMMARY: Integration indicates FE/BE contract is aligned.",
                     "DEFECT:",
                     "ID: no-blocking-issues",
                     "OWNER: shared",
