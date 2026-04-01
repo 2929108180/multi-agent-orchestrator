@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from io import StringIO
 from pathlib import Path
@@ -15,9 +16,11 @@ from mao_cli.gitops import WorkerWorkspace, apply_proposal_to_workspace, ensure_
 from mao_cli.mergeflow import MergeCandidate, append_merge_candidate, list_merge_candidates
 from mao_cli.orchestrator import execute_workflow
 from mao_cli.providers import ModelGateway, inspect_providers
+from mao_cli.tool_runtime import run_with_tools
 from mao_cli.registry import (
     assign_mcp_access,
     assign_skill_access,
+    bind_skill_to_mcp,
     filter_mcp_servers_for,
     filter_skills_for,
     import_local_mcp,
@@ -34,6 +37,7 @@ from mao_cli.sessions import (
     append_approval_items,
     append_turn,
     append_transcript_entry,
+    bounded_role_memory,
     build_conversation_context,
     build_review_memory,
     build_task_memory,
@@ -45,6 +49,7 @@ from mao_cli.sessions import (
     list_sessions,
     export_session_markdown,
     replay_lines,
+    save_session,
     select_approval_item,
     update_approval_item,
 )
@@ -85,6 +90,7 @@ CHAT_COMMANDS = {
     "/grant-mcp": "Grant a role or model access to one registered MCP server.",
     "/register-skill": "Register one skill into the registry.",
     "/register-mcp": "Register one MCP server into the registry.",
+    "/bind-skill": "Bind a skill to an MCP tool: <skill> <server> <tool>.",
     "/resume": "Choose and resume a saved session from this chat window.",
     "/queue": "List queued approval items.",
     "/review": "Show the currently selected approval item.",
@@ -157,6 +163,7 @@ class ChatSession:
             "integration": True,
             "reviewer": True,
         }
+        self._auto_approve_tools = False
         self._preflight_live_mode()
 
     def print_welcome(self) -> None:
@@ -335,6 +342,9 @@ class ChatSession:
         if command == "/register-mcp":
             self._register_mcp(argument)
             return False
+        if command == "/bind-skill":
+            self._bind_skill(argument)
+            return False
         if command == "/resume":
             self._resume_session()
             return False
@@ -391,6 +401,7 @@ class ChatSession:
             "frontend": build_task_memory(self.session, "frontend"),
             "backend": build_task_memory(self.session, "backend"),
         }
+        role_memories = dict(self.session.role_memories or {})
         review_memory = build_review_memory(self.session)
         capability_contexts = {
             role: self._build_capability_context(role)
@@ -407,6 +418,7 @@ class ChatSession:
             conversation_context=conversation_context,
             team_context=self.team_context,
             task_memories=task_memories,
+            role_memories=role_memories,
             review_memory=review_memory,
             capability_contexts=capability_contexts,
             enabled_roles={role for role, enabled in self.member_states.items() if enabled}.union({"architect"}),
@@ -430,6 +442,11 @@ class ChatSession:
             defects=defects,
         )
         self._append_run_approval_items(run_dir)
+        self._update_role_memories_from_run(
+            requirement=requirement,
+            run_dir=run_dir,
+            conversation_context=conversation_context,
+        )
 
         self._say(f"Run artifacts saved to: {run_dir}")
         self._say(f"approved={approved}")
@@ -437,6 +454,33 @@ class ChatSession:
         pending = [item for item in self.session.approval_queue if item.status in {"pending", "deferred"}]
         if pending:
             self._say(f"approval_queue={len(pending)} pending items. Use /queue or /review.")
+
+    def _confirm_tool_call(self, tool_name: str, description: str, args_summary: str) -> bool:
+        """Prompt the user to confirm a destructive tool call.
+
+        Returns True if allowed, False if denied.
+        Supports:
+          y = yes (allow this one)
+          n = no (deny)
+          a = allow all destructive tools for this session
+        """
+        if getattr(self, "_auto_approve_tools", False):
+            return True
+
+        self.console.print(
+            f"\n[bold yellow]Tool requires confirmation:[/bold yellow]\n"
+            f"  [cyan]{tool_name}[/cyan] — {description}\n"
+            f"  args: {args_summary}\n"
+        )
+        try:
+            choice = input("[y]es / [n]o / [a]llow all this session: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+        if choice in {"a", "allow"}:
+            self._auto_approve_tools = True
+            return True
+        return choice in {"y", "yes"}
 
     def _run_single_model(self, requirement: str) -> None:
         try:
@@ -447,17 +491,112 @@ class ChatSession:
 
         self._say("calling architect...")
         gateway = ModelGateway(config=self.config, force_mock=self.mock)
-        response = gateway.complete(
-            role="architect",
-            prompt="\n".join(
-                [
-                    "You are the primary assistant.",
-                    "Answer the user directly and concisely.",
-                    f"User input: {requirement}",
-                ]
-            ),
+
+        base_prompt = "\n".join(
+            [
+                "You are the primary assistant — an intelligent, autonomous, context-aware agent.",
+                "You think deeply, reason about intent, and proactively explore the codebase before acting.",
+                "You are NOT a passive command executor. You are a skilled engineer who understands WHY.",
+                "",
+                "# PHASE 1: DEEP UNDERSTANDING (do this mentally before ANY action)",
+                "",
+                "Before responding or using any tool, answer these questions internally:",
+                "- What is the user's REAL goal? (not the literal words — the underlying intent)",
+                "- What context do I need to do this well?",
+                "- What could go wrong if I act without full understanding?",
+                "",
+                "Examples of intent inference:",
+                "- '改为古诗词春晓' → user wants the COMPLETE poem 《春晓》 by 孟浩然 (all lines), not just the title",
+                "- '加个登录功能' → a fully working login feature with proper validation, not an empty stub",
+                "- '修复这个bug' → find root cause, understand why it happens, then fix properly",
+                "- '把这个函数改成异步' → read the function, understand all callers, update them all",
+                "- '优化这段代码' → read it, understand the bottleneck, propose a real improvement",
+                "",
+                "RULE: When the user references something by name (a poem, a protocol, an algorithm, a pattern),",
+                "you MUST deliver the COMPLETE, CORRECT, CANONICAL version. Never a fragment, placeholder, or summary.",
+                "",
+                "# PHASE 2: AUTONOMOUS CONTEXT GATHERING (use tools to explore BEFORE modifying)",
+                "",
+                "You are an autonomous agent. When a task involves code, you MUST gather context first:",
+                "",
+                "A) **Locate**: If the user mentions a file/function/class but not the exact path:",
+                "   - Use mao_fs.mao_fs_list_dir to browse directories",
+                "   - Search multiple levels deep if needed (list parent dir, then subdirs)",
+                "   - NEVER guess a path. NEVER invent a filename.",
+                "",
+                "B) **Read before edit**: Before modifying ANY file:",
+                "   - Read the ENTIRE target file with mao_fs.mao_fs_read_text",
+                "   - Understand its structure, imports, dependencies, coding style",
+                "   - Identify what the user's change will affect",
+                "",
+                "C) **Trace dependencies**: When changing a function/class/variable:",
+                "   - Think: who calls this? what imports this? what depends on this?",
+                "   - If the change affects interfaces, read the callers/importers too",
+                "   - A change in one place often requires changes in related files",
+                "",
+                "D) **Understand the neighborhood**: Before writing new code:",
+                "   - Read nearby files to understand the project's patterns and conventions",
+                "   - Match the existing style (naming, error handling, structure)",
+                "   - Don't introduce alien patterns into an established codebase",
+                "",
+                "E) **Multi-step exploration**: For complex tasks, chain multiple tool calls:",
+                "   - Step 1: List directory to find relevant files",
+                "   - Step 2: Read the target file",
+                "   - Step 3: Read related files (imports, callers, tests)",
+                "   - Step 4: NOW make the change with full context",
+                "",
+                "# PHASE 3: INTELLIGENT EXECUTION",
+                "",
+                "When producing output:",
+                "- Deliver COMPLETE results. Never partial. Never 'the rest stays the same'.",
+                "- If implementing a feature, write the FULL implementation.",
+                "- If writing content (poem, config, doc), write ALL of it.",
+                "- If modifying code, produce the complete modified version.",
+                "- If multiple files need changes, address ALL of them.",
+                "",
+                "Quality checks before responding:",
+                "- Does my output fulfill the user's REAL intent (not just literal words)?",
+                "- Is it COMPLETE? (no missing pieces, no TODOs, no placeholders)",
+                "- Is it CORRECT? (no syntax errors, no broken imports, no logic bugs)",
+                "- Is it CONSISTENT with the codebase style?",
+                "- Did I miss any related files that also need changes?",
+                "",
+                "# PHASE 4: PROACTIVE INTELLIGENCE",
+                "",
+                "- If you notice a bug, security issue, or improvement opportunity while working, mention it.",
+                "- If the request is ambiguous, state your interpretation and proceed (don't just stop).",
+                "- If you discover the user's approach won't work, explain why and suggest a better alternative.",
+                "- If a change breaks something else, fix that too or clearly flag it.",
+                "",
+                "# Tool Protocol",
+                "",
+                "You have tools in the catalog below. Use them as an autonomous agent would:",
+                "- EXPLORE first (list dirs, read files) → UNDERSTAND → then ACT (write/modify)",
+                "- For file operations: NEVER invent paths. List dirs or read to discover real paths.",
+                "- If the user gives only a filename, search for it with mao_fs.mao_fs_list_dir.",
+                "- If multiple matches exist, report them and ask which one.",
+                "- ARGS_JSON must be valid one-line JSON. Omit optional fields to use defaults.",
+                "",
+                f"User input: {requirement}",
+            ]
         )
-        self._say(f"architect summary: {self._summarize_text(response)}")
+
+        confirm_cb = self._confirm_tool_call if self._interactive_tty_available() else None
+
+        response, _tool_trace = run_with_tools(
+            gateway=gateway,
+            role="architect",
+            base_prompt=base_prompt,
+            project_root=self.project_root,
+            runtime_root=self.config.runtime_root,
+            config=self.config,
+            event_handler=self._handle_workflow_event,
+            run_id="",
+            round_index=0,
+            confirm_callback=confirm_cb,
+        )
+
+        self._say(response)
         self.session = append_turn(
             self.project_root,
             self.config.runtime_root,
@@ -475,9 +614,48 @@ class ChatSession:
             return True
         if self.team_mode == "off":
             return False
+        if self._looks_like_direct_fs_request(requirement):
+            return False
         if self.mock:
             return self._heuristic_should_use_team_mode(requirement)
         return self._supervisor_should_use_team_mode(requirement)
+
+    def _looks_like_direct_fs_request(self, requirement: str) -> bool:
+        """Detect direct file CRUD requests that should stay in single-model mode."""
+        text = requirement.strip()
+        lowered = text.lower()
+
+        action_patterns = [
+            r"\b(create|write|read|list|delete|remove|mkdir|edit|update|overwrite)\b",
+            r"(创建|写入|读取|读出|列出|删除|移除|新建|修改|覆盖|目录|文件夹|文件)",
+        ]
+        path_patterns = [
+            r"[A-Za-z0-9_\-./\\]+\.[A-Za-z0-9]{1,16}",
+            r"(?<![A-Za-z])(?:\.{0,2}[\\/])?[A-Za-z0-9_\-./\\]+[\\/][A-Za-z0-9_\-./\\]+",
+            r"`[^`]+`",
+        ]
+        feature_signals = [
+            "frontend",
+            "backend",
+            "api",
+            "react",
+            "vite",
+            "fastapi",
+            "system",
+            "project",
+            "应用",
+            "前端",
+            "后端",
+            "接口",
+            "系统",
+            "项目",
+        ]
+
+        has_action = any(re.search(pattern, lowered if "\\b" in pattern else text, re.IGNORECASE) for pattern in action_patterns)
+        has_path = any(re.search(pattern, text) for pattern in path_patterns)
+        if not (has_action and has_path):
+            return False
+        return not any(token in lowered for token in feature_signals)
 
     def _heuristic_should_use_team_mode(self, requirement: str) -> bool:
         lowered = requirement.lower()
@@ -524,23 +702,29 @@ class ChatSession:
 
     def _supervisor_should_use_team_mode(self, requirement: str) -> bool:
         gateway = ModelGateway(config=self.config, force_mock=self.mock)
-        response = gateway.complete(
-            role="architect",
-            prompt="\n".join(
-                [
-                    "You are the supervisor routing assistant.",
-                    "Decide whether this input requires the whole team workflow or a direct single-model reply.",
-                    "Return exactly one line:",
-                    "TEAM_MODE: on or TEAM_MODE: off",
-                    f"User input: {requirement}",
-                ]
-            ),
+        prompt = "\n".join(
+            [
+                "You are the supervisor routing assistant.",
+                "Decide whether this input requires the whole team workflow or a direct single-model reply.",
+                "Return exactly one line:",
+                "TEAM_MODE: on or TEAM_MODE: off",
+                f"User input: {requirement}",
+            ]
         )
+
+        if self._interactive_tty_available():
+            with self.console.status("Deciding routing..."):
+                response = gateway.complete(role="architect", prompt=prompt)
+        else:
+            response = gateway.complete(role="architect", prompt=prompt)
         first_line = response.splitlines()[0].strip().lower()
         return "team_mode: on" in first_line
 
     def _interactive_completion_available(self) -> bool:
-        return PromptSession is not None and sys.stdin.isatty() and sys.stdout.isatty()
+        return PromptSession is not None and self._interactive_tty_available()
+
+    def _interactive_tty_available(self) -> bool:
+        return sys.stdin.isatty() and sys.stdout.isatty()
 
     def _create_prompt_session(self):
         if PromptSession is None:
@@ -561,6 +745,14 @@ class ChatSession:
         prefix = self._event_prefix(role=role, model=model)
         if event.event_type == "workflow_started":
             return "workflow: started"
+        if event.event_type == "tool_call_started":
+            name = (event.metadata or {}).get("name", "")
+            return f"{prefix} tool -> {name}"
+        if event.event_type == "tool_call_completed":
+            name = (event.metadata or {}).get("name", "")
+            ok = (event.metadata or {}).get("ok", "")
+            suffix = f" ok={ok}" if ok else ""
+            return f"{prefix} tool <- {name}{suffix}"
         if event.event_type == "architect_started":
             return f"{prefix} planning"
         if event.event_type == "architect_dispatched":
@@ -872,6 +1064,24 @@ class ChatSession:
         )
         self._say(f"mcp registered -> {target}")
 
+    def _bind_skill(self, argument: str) -> None:
+        parts = argument.split()
+        if len(parts) != 3:
+            self._say("Use `/bind-skill <skill> <server> <tool>`. Example: `/bind-skill pdf mao_mcp mao_read_project_doc`.")
+            return
+        skill, server, tool = parts
+        target = bind_skill_to_mcp(
+            self.project_root,
+            self.config.runtime_root,
+            skill=skill,
+            server=server,
+            tool=tool,
+        )
+        self.skills = registered_or_discovered_skills(self.project_root, self.config.runtime_root)
+        self.team_context = self._build_team_context()
+        self._say(f"skill bound -> {skill} -> {server}.{tool}")
+        self._say(f"registry={target}")
+
     def _append_run_approval_items(self, run_dir: Path) -> None:
         integration_path = run_dir / "integration.json"
         if not integration_path.exists():
@@ -903,6 +1113,142 @@ class ChatSession:
             self.session,
             queue_items,
         )
+
+    def _update_role_memories_from_run(self, *, requirement: str, run_dir: Path, conversation_context: str) -> None:
+        """Update per-role long-lived memories after a workflow run.
+
+        Notes:
+        - Uses the architect to produce bounded summaries.
+        - Prompt explicitly forbids repeating raw user input.
+        """
+
+        try:
+            payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
+        except Exception:
+            return
+
+        exchanges = payload.get("exchanges") or []
+        verdicts = payload.get("verdicts") or []
+
+        def _exchange(role: str) -> str:
+            item = next((ex for ex in exchanges if ex.get("role") == role), None)
+            return item.get("response", "") if isinstance(item, dict) and item else ""
+
+        reviewer_summary = ""
+        reviewer_defects: list[str] = []
+        if verdicts:
+            last_verdict = verdicts[-1]
+            if isinstance(last_verdict, dict):
+                reviewer_summary = str(last_verdict.get("summary", "") or "")
+                defects = last_verdict.get("defects") or []
+                if isinstance(defects, list):
+                    for defect in defects:
+                        if isinstance(defect, dict):
+                            summary = defect.get("summary") or defect.get("title") or ""
+                            if summary:
+                                reviewer_defects.append(str(summary))
+                        elif isinstance(defect, str):
+                            reviewer_defects.append(defect)
+
+        role_briefs: dict[str, str] = {}
+        briefs_exchange = next((ex for ex in exchanges if ex.get("role") == "architect" and "ROLE_BRIEFS:" in (ex.get("response") or "")), None)
+        if isinstance(briefs_exchange, dict):
+            raw = briefs_exchange.get("response") or ""
+            if isinstance(raw, str):
+                for line in raw.splitlines():
+                    if ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    k = key.strip().lower()
+                    if k in {"frontend", "backend", "integration", "reviewer"}:
+                        role_briefs[k] = value.strip()
+
+        gateway = ModelGateway(config=self.config, force_mock=self.mock)
+
+        previous_memories = dict(self.session.role_memories or {})
+
+        update_prompt = "\n".join(
+            [
+                "You are the architect.",
+                "Update long-lived per-role working memories for future runs.",
+                "CRITICAL RULES:",
+                "- Do NOT quote or reproduce raw user input verbatim.",
+                "- Do NOT include secrets, API keys, or long transcripts.",
+                "- Be concise; focus on stable decisions, interfaces, constraints, and unresolved issues.",
+                "- Each role memory should be a compact summary (bullets ok).",
+                "Output ONLY this block and nothing else:",
+                "ROLE_MEMORIES:",
+                "FRONTEND: ...",
+                "BACKEND: ...",
+                "INTEGRATION: ...",
+                "REVIEWER: ...",
+                "END_ROLE_MEMORIES",
+                "",
+                f"Conversation context (already summarized):\n{conversation_context}",
+                "",
+                f"User input (for reference only; do not quote): {requirement}",
+                "",
+                "Role briefs (already summarized):",
+                f"FRONTEND_BRIEF: {role_briefs.get('frontend','')}",
+                f"BACKEND_BRIEF: {role_briefs.get('backend','')}",
+                f"INTEGRATION_BRIEF: {role_briefs.get('integration','')}",
+                f"REVIEWER_BRIEF: {role_briefs.get('reviewer','')}",
+                "",
+                "Worker outputs (summaries/proposals):",
+                f"FRONTEND_OUTPUT: {_exchange('frontend')}",
+                f"BACKEND_OUTPUT: {_exchange('backend')}",
+                f"INTEGRATION_OUTPUT: {_exchange('integration')}",
+                f"REVIEWER_SUMMARY: {reviewer_summary}",
+                f"REVIEWER_DEFECTS: {'; '.join(reviewer_defects)}",
+                "",
+                "Previous role memories:",
+                f"FRONTEND_PREV: {previous_memories.get('frontend','')}",
+                f"BACKEND_PREV: {previous_memories.get('backend','')}",
+                f"INTEGRATION_PREV: {previous_memories.get('integration','')}",
+                f"REVIEWER_PREV: {previous_memories.get('reviewer','')}",
+            ]
+        )
+
+        response, _tool_trace = run_with_tools(
+            gateway=gateway,
+            role="architect",
+            base_prompt=update_prompt,
+            project_root=self.project_root,
+            runtime_root=self.config.runtime_root,
+            config=self.config,
+            event_handler=self._handle_workflow_event,
+            run_id=str(payload.get("run_id", "")),
+            round_index=0,
+        )
+
+        if not isinstance(response, str) or not response.strip():
+            return
+
+        new_memories: dict[str, str] = {}
+        in_block = False
+        for raw_line in response.splitlines():
+            line = raw_line.strip()
+            if line == "ROLE_MEMORIES:":
+                in_block = True
+                continue
+            if line == "END_ROLE_MEMORIES":
+                break
+            if not in_block:
+                continue
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            k = key.strip().lower()
+            v = value.strip()
+            if k in {"frontend", "backend", "integration", "reviewer"}:
+                new_memories[k] = bounded_role_memory(v)
+
+        if not new_memories:
+            return
+
+        self.session.role_memories.update(new_memories)
+        self.session.role_memories = {k: bounded_role_memory(v) for k, v in self.session.role_memories.items()}
+        save_session(self.project_root, self.config.runtime_root, self.session)
 
     def _print_queue(self) -> None:
         if not self.session.approval_queue:

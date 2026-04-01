@@ -18,6 +18,12 @@ def configure_terminal() -> None:
     except Exception:
         pass
     try:
+        # prompt_toolkit / input() both depend on stdin encoding; without this,
+        # Chinese input can arrive garbled in some Windows console hosts.
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass

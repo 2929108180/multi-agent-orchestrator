@@ -57,21 +57,46 @@ providers:
   frontend:
     adapter: gemini
     profile: packy_gemini_generate_content
-    model: gemini-3-pro-preview
+    model: gemini-3.1-pro-preview
     api_key_env: GEMINI_API_KEY
     base_url: https://api-slb.packyapi.com
     api_style: generate_content
 
   backend:
     adapter: anthropic
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     api_key_env: ANTHROPIC_AUTH_TOKEN
     base_url: https://api-slb.packyapi.com
     api_style: messages
 
+  integration:
+    adapter: openai
+    profile: packy_openai_responses
+    model: gpt-5.4
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api-slb.packyapi.com/v1
+    api_style: responses
+    extra_headers:
+      version: "0.58.0"
+      conversation_id: "__UUID__"
+      session_id: "__UUID__"
+      accept: "application/json"
+      user-agent: "mao/0.1"
+    extra_body:
+      include:
+        - "reasoning.encrypted_content"
+      tool_choice: "auto"
+      text:
+        verbosity: "low"
+      reasoning:
+        effort: "high"
+        summary: "auto"
+      store: false
+      parallel_tool_calls: false
+
   reviewer:
     adapter: anthropic
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     api_key_env: ANTHROPIC_AUTH_TOKEN
     base_url: https://api-slb.packyapi.com
     api_style: messages

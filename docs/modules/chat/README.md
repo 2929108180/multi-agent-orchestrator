@@ -4,7 +4,10 @@
 
 - interactive `mao chat`
 - transcript replay on resume
-- single-model vs team routing
+- single-model vs team routing (`/team auto|on|off`)
+- TTY-only waiting status (Rich spinner) for:
+  - single-model reply generation
+  - live routing decision
 - colored event output with role/model labels
 - slash commands for session, approval, skills, MCP, merge
 - export session transcript to markdown (`/export`)

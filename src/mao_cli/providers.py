@@ -228,6 +228,17 @@ class ModelGateway:
 
     def _mock_response(self, role: str, prompt: str) -> str:
         if role == "architect":
+            if "ROLE_MEMORIES:" in prompt:
+                return "\n".join(
+                    [
+                        "ROLE_MEMORIES:",
+                        "FRONTEND: Prefer /api/tasks; track UI states (loading/empty/error).",
+                        "BACKEND: Expose GET/POST /api/tasks with stable fields title,status,assignee.",
+                        "INTEGRATION: Keep FE/BE binding in sync; flag endpoint mismatches.",
+                        "REVIEWER: Watch for contract drift and missing acceptance criteria.",
+                        "END_ROLE_MEMORIES",
+                    ]
+                )
             if "TEAM_MODE:" in prompt and "routing assistant" in prompt:
                 lowered = prompt.lower()
                 if any(token in lowered for token in ["frontend", "backend", "react", "fastapi", "项目", "系统", "task", "build", "create"]):

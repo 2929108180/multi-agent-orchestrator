@@ -18,6 +18,7 @@ English and Chinese documentation index for MAO.
 
 ## 简体中文
 
+- [project-history.zh-CN.md](./project-history.zh-CN.md)
 - [architecture-baseline.zh-CN.md](./architecture-baseline.zh-CN.md)
 - [architecture-layers.zh-CN.md](./architecture-layers.zh-CN.md)
 - [mcp-integration.zh-CN.md](./mcp-integration.zh-CN.md)

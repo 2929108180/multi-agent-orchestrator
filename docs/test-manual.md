@@ -31,7 +31,8 @@ Expected:
 
 - commands render successfully
 - status shows implemented core areas
-- doctor shows mock providers as ready
+- doctor shows configured providers and required env vars
+  - use `mao doctor --config <your-live-config.yaml>` to verify live env readiness
 
 ## 2. Mock Workflow
 
@@ -124,6 +125,8 @@ mao skills import-local
 mao skills list
 mao skills show mcp-builder
 
+# MCP import-local auto-discovers: project .mcp.json + Claude Desktop config (best-effort)
+# and uses merge semantics (does not overwrite enabled/roles/models/tools)
 mao mcp import-local
 mao mcp list
 mao mcp show mao_mcp
@@ -135,10 +138,95 @@ Expected:
 
 - local skill import writes to registry
 - local MCP import writes to registry
+  - if Claude Desktop config contains a stdio MCP like `dameng_mcp`, it should be imported
 - list and show commands return readable output
 - policy show returns approval rules
 
-## 6. Chat-Based Capability Management
+### 5.1 Verify a stdio MCP (example: dameng_mcp) discovery + tool-call
+
+1) Confirm Claude Desktop config contains an MCP entry:
+
+- Windows: `%APPDATA%/Claude/claude_desktop_config.json`
+- Example shape:
+
+```json
+{
+  "mcpServers": {
+    "dameng_mcp": {"command": "python", "args": ["-m", "dameng_mcp"], "env": {"...": "..."}}
+  }
+}
+```
+
+2) Import and inspect:
+
+```powershell
+mao mcp import-local
+mao mcp list
+mao mcp show dameng_mcp
+mao mcp tools dameng_mcp
+```
+
+Expected:
+
+- `dameng_mcp` appears in `mao mcp list`
+- `mao mcp tools dameng_mcp` lists tools (if the server supports `list_tools`)
+
+3) Verify tool calling from chat/workflow (server must be visible to the current role/model):
+
+- To restrict visibility:
+
+```powershell
+mao mcp grant dameng_mcp --role backend
+```
+
+- Then in live/team workflow, observe `tool -> dameng_mcp.<tool>` succeeds (use an actual tool name listed above).
+
+## 6. Single-model (architect) tool validation
+
+### 6.1 List MCP/skills (should tool-call before answering)
+
+```powershell
+mao chat --mock
+```
+
+Inside:
+
+```text
+What MCP servers are available?
+What skills are available?
+/exit
+```
+
+Expected:
+
+- tool events appear, e.g.:
+  - `architect tool -> mao_mcp.mao_list_mcp_servers`
+  - `architect tool -> mao_mcp.mao_list_skills`
+
+### 6.2 Single-model file system CRUD (mao_fs)
+
+```powershell
+mao chat --mock
+```
+
+Inside:
+
+```text
+/team off
+Create tmp/test.txt with content: hello
+Read tmp/test.txt
+List tmp directory
+Delete tmp/test.txt
+Delete tmp directory
+/exit
+```
+
+Expected:
+
+- `architect tool -> mao_fs.*` calls appear
+- overwrite/delete requires explicit confirm fields (confirm=YES / confirm=DELETE)
+
+## 7. Chat-Based Capability Management
 
 ```powershell
 mao chat --mock
@@ -178,29 +266,88 @@ Expected:
 - merge candidates are listed
 - status and shared flags are visible
 
-## 8. Live Provider Preflight
+## 8. Live Provider Preflight + Live Chat Full Run
 
-Prepare a real config or use the example:
+### 8.1 Preflight (report + strict validate)
+
+Use your real config (example: `configs/live.packyapi.yaml`).
+
+Report mode (does not fail fast):
 
 ```powershell
-mao validate --config configs/live.multi-provider.example.yaml
+mao doctor --config configs/live.packyapi.yaml
+```
+
+Strict validate (fails when any key is missing):
+
+```powershell
+mao validate --config configs/live.packyapi.yaml
 ```
 
 Expected:
 
-- if keys are missing, validation reports missing env vars
-- if keys are set correctly, validation passes
+- if keys are missing, validation reports missing env vars and exits non-zero
+- if keys are set correctly, validation prints `All configured providers are ready.`
 
-Then:
+### 8.2 Live chat start
 
 ```powershell
-mao chat --live --config configs/live.multi-provider.example.yaml
+mao chat --live --config configs/live.packyapi.yaml
 ```
 
 Expected:
 
 - live preflight succeeds only when required keys are available
 - otherwise it fails before chat starts
+
+### 8.3 Live chat capability/registry smoke test
+
+Inside live chat:
+
+```text
+/status
+/skills
+/mcp
+/team auto
+```
+
+Expected:
+
+- skills and MCP servers render in chat UI
+- team mode can be queried/changed
+
+### 8.4 Live routing spinner + single-model spinner
+
+Inside live chat:
+
+1) Auto routing decision (TTY should show `Deciding routing...`):
+
+```text
+Hello
+```
+
+2) Force single-model reply (TTY should show `Thinking...`):
+
+```text
+/team off
+Summarize the current project status.
+```
+
+### 8.5 Live team workflow run (end-to-end)
+
+Inside live chat:
+
+```text
+/team on
+Build a small task tracker with FE dashboard and BE API.
+/exit
+```
+
+Expected:
+
+- workflow events appear for architect/frontend/backend/integration/reviewer
+- run artifacts are saved
+- approval queue is updated when decisions exist
 
 ## 9. Full Regression
 
@@ -233,4 +380,4 @@ If session restore feels wrong, also check:
 Remember:
 
 - resuming a session restores state
-- it does not replay the old terminal transcript automatically
+- MAO will replay the saved session transcript on startup (a convenience replay, not your terminal scrollback)

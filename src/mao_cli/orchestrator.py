@@ -25,6 +25,17 @@ from mao_cli.gitops import WorkerWorkspace, create_worker_worktrees, write_worke
 from mao_cli.mergeflow import MergeCandidate
 from mao_cli.providers import ModelGateway
 from mao_cli.security import bounded_text, validate_requirement
+from mao_cli.tool_runtime import run_with_tools
+
+
+ROLE_BRIEFS_PROTOCOL_V1 = [
+    "ROLE_BRIEFS:",
+    "FRONTEND: ...",
+    "BACKEND: ...",
+    "INTEGRATION: ...",
+    "REVIEWER: ...",
+    "END_ROLE_BRIEFS",
+]
 
 
 INTEGRATION_PROTOCOL_V1 = [
@@ -160,23 +171,56 @@ def build_architect_plan(requirement: str) -> ArchitectPlan:
     )
 
 
-def _render_worker_prompt(plan: ArchitectPlan, task: WorkerTask) -> str:
+def _render_worker_prompt(plan: ArchitectPlan, task: WorkerTask, *, role_brief: str = "") -> str:
     sections: list[str] = [
         f"Role: {task.role}",
         f"Objective: {task.objective}",
-        "Shared contract:",
-        *[f"- {item}" for item in plan.shared_contract],
-        "Deliverables:",
-        *[f"- {item}" for item in task.deliverables],
-        "Acceptance criteria:",
-        *[f"- {item}" for item in task.acceptance_criteria],
-        "Allowed paths:",
-        *[f"- {item}" for item in task.allowed_paths],
-        "Restricted paths:",
-        *[f"- {item}" for item in task.restricted_paths],
-        "Do not change files outside your owned paths. Shared contract changes must be escalated to integration.",
-        "Respond with a concise but concrete implementation proposal.",
+        "",
+        "# Thinking Rules (CRITICAL — follow BEFORE producing any output)",
+        "",
+        "## Phase 1: Deep Understanding",
+        "- What is the user/architect's REAL intent? (not just literal words)",
+        "- What would a COMPLETE, HIGH-QUALITY result look like?",
+        "- If the objective references a known concept (poem, protocol, algorithm, pattern),",
+        "  I must produce the FULL, CORRECT, CANONICAL version — never a stub or fragment.",
+        "",
+        "## Phase 2: Context & Dependencies",
+        "- How does my output connect to what other roles produce?",
+        "- What existing code/patterns in this project must I be consistent with?",
+        "- If I'm modifying code: what calls this? what imports this? what breaks if I change this?",
+        "- If I have file-access tools: READ the target file BEFORE proposing changes.",
+        "  Understand imports, structure, style. Never propose changes to code I haven't seen.",
+        "",
+        "## Phase 3: Complete Delivery",
+        "- Deliver COMPLETE results. No placeholders, no 'rest stays the same', no TODOs.",
+        "- If implementing a feature: full implementation with all edge cases.",
+        "- If writing content: every line, not a summary.",
+        "- If modifying multiple files: address ALL of them.",
+        "",
+        "## Phase 4: Self-Check",
+        "- Does my output fulfill the REAL intent?",
+        "- Is it complete? correct? consistent with the codebase?",
+        "- Did I miss any dependent/related changes?",
+        "",
     ]
+    if role_brief:
+        sections.extend(["Role brief (from architect):", role_brief])
+    sections.extend(
+        [
+            "Shared contract:",
+            *[f"- {item}" for item in plan.shared_contract],
+            "Deliverables:",
+            *[f"- {item}" for item in task.deliverables],
+            "Acceptance criteria:",
+            *[f"- {item}" for item in task.acceptance_criteria],
+            "Allowed paths:",
+            *[f"- {item}" for item in task.allowed_paths],
+            "Restricted paths:",
+            *[f"- {item}" for item in task.restricted_paths],
+            "Do not change files outside your owned paths. Shared contract changes must be escalated to integration.",
+            "Respond with a concise but concrete implementation proposal.",
+        ]
+    )
 
     if task.response_protocol:
         sections.extend(["Return this exact format:", *task.response_protocol])
@@ -202,19 +246,49 @@ def _render_review_prompt(
     team_context: str = "",
     review_memory: str = "",
     capability_context: str = "",
+    reviewer_brief: str = "",
+    reviewer_role_memory: str = "",
 ) -> str:
     focus = "\n".join(f"- {item}" for item in plan.review_focus)
     contract = "\n".join(f"- {item}" for item in plan.shared_contract)
     sections = [
-        "You are the reviewer.",
+        "You are the reviewer — a thorough, intelligent quality gate who thinks deeply.",
+        "",
+        "# Review Thinking Rules (CRITICAL)",
+        "",
+        "## Intent Alignment (most important)",
+        "- First, understand what the user ACTUALLY wanted — not just the literal request.",
+        "- '改为春晓' means the COMPLETE poem must appear, not just a title or fragment.",
+        "- '加个功能' means a FULLY working feature, not a stub.",
+        "- If the output only partially addresses the real intent → DEFECT.",
+        "",
+        "## Completeness Check",
+        "- Is the output COMPLETE? No missing pieces, no TODOs, no placeholders?",
+        "- Does it cover all affected files, not just the primary one?",
+        "- If code was modified, were callers/importers/tests also updated?",
+        "",
+        "## Correctness Check",
+        "- Is the content accurate? (poems, algorithms, protocols must be canonical)",
+        "- Is the code syntactically and logically correct?",
+        "- Are imports, types, and interfaces consistent?",
+        "",
+        "## Context Fit",
+        "- Does the output match the existing codebase style and patterns?",
+        "- Were established conventions respected?",
+        "- If you have file-access tools, use them to verify against the actual codebase.",
+        "",
         f"Requirement: {requirement}",
     ]
+    if reviewer_brief:
+        sections.extend(["Reviewer brief (from architect):", reviewer_brief])
     if conversation_context:
         sections.extend(["Conversation context:", conversation_context])
     if team_context:
         sections.extend(["Team context:", team_context])
     if review_memory:
         sections.extend(["Review memory:", review_memory])
+    if reviewer_role_memory:
+        sections.extend(["Role memory:", reviewer_role_memory])
     if capability_context:
         sections.extend(["Capability context:", capability_context])
     sections.extend(
@@ -568,6 +642,7 @@ def execute_workflow(
     conversation_context: str = "",
     team_context: str = "",
     task_memories: dict[str, str] | None = None,
+    role_memories: dict[str, str] | None = None,
     review_memory: str = "",
     capability_contexts: dict[str, str] | None = None,
     enabled_roles: set[str] | None = None,
@@ -600,7 +675,17 @@ def execute_workflow(
 
     def _call(role: str, prompt: str, round_index: int = 0) -> AgentExchange:
         provider = config.providers[role]
-        response = gateway.complete(role=role, prompt=prompt)
+        response, _tool_trace = run_with_tools(
+            gateway=gateway,
+            role=role,
+            base_prompt=prompt,
+            project_root=repository_root,
+            runtime_root=config.runtime_root,
+            config=config,
+            event_handler=event_handler,
+            run_id=run.run_id,
+            round_index=round_index,
+        )
         return AgentExchange(
             role=role,
             model=provider.model,
@@ -611,7 +696,29 @@ def execute_workflow(
         )
 
     architect_sections = [
-        "You are the architect.",
+        "You are the architect — the strategic thinker, planner, and technical leader.",
+        "You think deeply about what the user REALLY wants and design a plan that delivers it COMPLETELY.",
+        "",
+        "# Thinking Rules (CRITICAL)",
+        "",
+        "## Intent Analysis",
+        "- The user's literal text is a STARTING POINT, not the full specification.",
+        "- Ask: what does the user actually want to achieve? What would make them say 'perfect'?",
+        "- '改一下登录页' → comprehensive login page redesign, not a one-line tweak.",
+        "- '加个搜索功能' → fully working search with UI, backend, edge cases.",
+        "- When something is referenced by name, the team must produce it COMPLETELY and CORRECTLY.",
+        "",
+        "## Context Awareness",
+        "- If you have file-access tools, USE THEM to understand the existing codebase before planning.",
+        "- Consider: what code already exists? what patterns are used? what will the change affect?",
+        "- Your plan must account for ALL files and dependencies that need changes — not just the obvious ones.",
+        "",
+        "## Complete Planning",
+        "- Every worker must receive enough context to deliver a COMPLETE result.",
+        "- Don't leave ambiguity for workers to resolve — resolve it here.",
+        "- If the requirement is complex, break it into clear, concrete sub-tasks.",
+        "- Think about: dependencies between changes, edge cases, integration points.",
+        "",
         f"Requirement: {requirement}",
     ]
     if conversation_context:
@@ -638,15 +745,56 @@ def execute_workflow(
         message=_summarize_text(architect_exchange.response),
     )
 
-    frontend_prompt = _render_worker_prompt(plan, plan.frontend_task)
-    backend_prompt = _render_worker_prompt(plan, plan.backend_task)
-    integration_prompt = _render_worker_prompt(plan, plan.integration_task)
+    briefs_prompt = _render_prompt_sections(
+        [
+            "You are the architect.",
+            "Generate role-specific briefs for the team members.",
+            "IMPORTANT: Each brief must convey the FULL intent of the requirement — not just the literal words.",
+            "If the user asked for something by name (a poem, a protocol, an algorithm), explicitly tell the worker to produce the COMPLETE canonical version.",
+            "Only output the ROLE_BRIEFS block. No other text.",
+            "",
+            f"Requirement: {requirement}",
+            "",
+            "ROLE_BRIEFS:",
+            "FRONTEND: <one paragraph; concrete tasks and constraints>",
+            "BACKEND: <one paragraph; concrete tasks and constraints>",
+            "INTEGRATION: <one paragraph; contract/binding focus>",
+            "REVIEWER: <one paragraph; review focus and risks>",
+            "END_ROLE_BRIEFS",
+        ]
+    )
+    _emit_event(
+        event_handler,
+        "architect_dispatched",
+        role="architect",
+        run_id=run.run_id,
+        message=f"task={_summarize_text('Generate role briefs for distribution.')}",
+    )
+    briefs_exchange = _call("architect", briefs_prompt)
+    run.exchanges.append(briefs_exchange)
+    role_briefs = _parse_role_briefs(briefs_exchange.response)
+
+    frontend_prompt = _render_worker_prompt(plan, plan.frontend_task, role_brief=role_briefs.get("frontend", ""))
+    backend_prompt = _render_worker_prompt(plan, plan.backend_task, role_brief=role_briefs.get("backend", ""))
+    integration_prompt = _render_worker_prompt(plan, plan.integration_task, role_brief=role_briefs.get("integration", ""))
     frontend_task_memory = (task_memories or {}).get("frontend", "")
     backend_task_memory = (task_memories or {}).get("backend", "")
+    frontend_role_memory = (role_memories or {}).get("frontend", "")
+    backend_role_memory = (role_memories or {}).get("backend", "")
+    integration_role_memory = (role_memories or {}).get("integration", "")
+    reviewer_role_memory = (role_memories or {}).get("reviewer", "")
+
     frontend_capability_context = (capability_contexts or {}).get("frontend", "")
     backend_capability_context = (capability_contexts or {}).get("backend", "")
     reviewer_capability_context = (capability_contexts or {}).get("reviewer", "")
-    if conversation_context or team_context or frontend_task_memory or frontend_capability_context:
+
+    if (
+        conversation_context
+        or team_context
+        or frontend_task_memory
+        or frontend_role_memory
+        or frontend_capability_context
+    ):
         context_sections: list[str] = []
         if conversation_context:
             context_sections.extend(["Conversation context:", conversation_context])
@@ -654,11 +802,20 @@ def execute_workflow(
             context_sections.extend(["Team context:", team_context])
         if frontend_task_memory:
             context_sections.extend(["Task memory:", frontend_task_memory])
+        if frontend_role_memory:
+            context_sections.extend(["Role memory:", frontend_role_memory])
         if frontend_capability_context:
             context_sections.extend(["Capability context:", frontend_capability_context])
         context_block = _render_prompt_sections(context_sections)
         frontend_prompt = frontend_prompt + "\n\n" + context_block
-    if conversation_context or team_context or backend_task_memory or backend_capability_context:
+
+    if (
+        conversation_context
+        or team_context
+        or backend_task_memory
+        or backend_role_memory
+        or backend_capability_context
+    ):
         context_sections = []
         if conversation_context:
             context_sections.extend(["Conversation context:", conversation_context])
@@ -666,16 +823,21 @@ def execute_workflow(
             context_sections.extend(["Team context:", team_context])
         if backend_task_memory:
             context_sections.extend(["Task memory:", backend_task_memory])
+        if backend_role_memory:
+            context_sections.extend(["Role memory:", backend_role_memory])
         if backend_capability_context:
             context_sections.extend(["Capability context:", backend_capability_context])
         backend_prompt = backend_prompt + "\n\n" + _render_prompt_sections(context_sections)
+
     integration_capability_context = (capability_contexts or {}).get("integration", "")
-    if conversation_context or team_context or integration_capability_context:
+    if conversation_context or team_context or integration_role_memory or integration_capability_context:
         context_sections = []
         if conversation_context:
             context_sections.extend(["Conversation context:", conversation_context])
         if team_context:
             context_sections.extend(["Team context:", team_context])
+        if integration_role_memory:
+            context_sections.extend(["Role memory:", integration_role_memory])
         if integration_capability_context:
             context_sections.extend(["Capability context:", integration_capability_context])
         integration_prompt = integration_prompt + "\n\n" + _render_prompt_sections(context_sections)
@@ -773,6 +935,7 @@ def execute_workflow(
     if parsed_integration_report is not None:
         run.integration_reports.append(parsed_integration_report)
 
+    # Reviewer still sees the full requirement (not summarized).
     review_prompt = _render_review_prompt(
         requirement=requirement,
         plan=plan,
@@ -783,6 +946,8 @@ def execute_workflow(
         team_context=team_context,
         review_memory=review_memory,
         capability_context=reviewer_capability_context,
+        reviewer_brief=role_briefs.get("reviewer", ""),
+        reviewer_role_memory=reviewer_role_memory,
     )
     if "reviewer" in active_roles:
         _emit_event(
@@ -954,6 +1119,8 @@ def execute_workflow(
             team_context=team_context,
             review_memory=review_memory,
             capability_context=reviewer_capability_context,
+            reviewer_brief=role_briefs.get("reviewer", ""),
+            reviewer_role_memory=reviewer_role_memory,
         )
         _emit_event(
             event_handler,
@@ -1127,6 +1294,39 @@ def _render_repair_prompt(task_prompt: str, defects: list[ReviewDefect]) -> str:
 
 def _render_prompt_sections(parts: list[str]) -> str:
     return "\n".join(part for part in parts if part)
+
+
+def _parse_role_briefs(text: str) -> dict[str, str]:
+    """Parse a ROLE_BRIEFS block.
+
+    Returns lowercase keys: frontend/backend/integration/reviewer.
+    """
+
+    lines = text.splitlines()
+    start = None
+    end = None
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "ROLE_BRIEFS:":
+            start = idx + 1
+            continue
+        if stripped == "END_ROLE_BRIEFS":
+            end = idx
+            break
+
+    if start is None or end is None or end < start:
+        return {}
+
+    briefs: dict[str, str] = {}
+    for raw in lines[start:end]:
+        line = raw.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        k = key.strip().lower()
+        if k in {"frontend", "backend", "integration", "reviewer"}:
+            briefs[k] = bounded_text(value.strip(), limit=1200)
+    return briefs
 
 
 def _summarize_text(text: str, limit: int = 120) -> str:

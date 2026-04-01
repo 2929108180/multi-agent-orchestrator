@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 from uuid import uuid4
 
+
 import yaml
 from typer.testing import CliRunner
 
@@ -10,6 +11,7 @@ from mao_cli.main import app
 from mao_cli.core.models import AgentExchange, WorkflowEvent
 from mao_cli.gitops import create_worker_worktrees
 from mao_cli.orchestrator import execute_workflow, parse_integration_report, parse_review_verdict, _evaluate_ownership
+
 
 
 def test_status_command() -> None:
@@ -49,7 +51,8 @@ def test_run_command_creates_artifacts(tmp_path) -> None:
     assert payload["verdicts"][0]["defects"][0]["owner"] == "frontend"
     assert payload["plan"]["frontend_task"]["allowed_paths"]
     assert payload["plan"]["backend_task"]["restricted_paths"]
-    assert payload["exchanges"][1]["proposed_paths"]
+    frontend_exchange = next(item for item in payload["exchanges"] if item["role"] == "frontend")
+    assert frontend_exchange["proposed_paths"]
 
     # Integration artifacts should preserve legacy fields and include structured reports.
     assert "decisions" in integration_payload
@@ -264,6 +267,326 @@ def test_execute_workflow_emits_events(tmp_path: Path) -> None:
     assert event_types[-1] == "workflow_completed"
 
 
+def test_tool_protocol_parser_parses_tool_call() -> None:
+    from mao_cli.tool_runtime import parse_tool_calls
+
+    calls = parse_tool_calls(
+        "\n".join(
+            [
+                "Some preface.",
+                "TOOL_CALL:",
+                "TYPE: mcp",
+                "NAME: mao_mcp.mao_project_status",
+                "ARGS_JSON: {\"params\": {}}",
+                "END_TOOL_CALL",
+            ]
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0].call_type == "mcp"
+    assert calls[0].server == "mao_mcp"
+    assert calls[0].tool == "mao_project_status"
+    assert calls[0].args == {"params": {}}
+
+
+def test_skill_bind_persists_to_registry(tmp_path: Path) -> None:
+    from mao_cli.registry import save_skill_registry, load_skill_registry, bind_skill_to_mcp, SkillRecord
+
+    runtime_root = "runtime"
+    project_root = tmp_path
+
+    save_skill_registry(
+        project_root,
+        runtime_root,
+        [SkillRecord(name="pdf", description="PDF helper", path="/tmp/SKILL.md", source="test")],
+    )
+    bind_skill_to_mcp(project_root, runtime_root, skill="pdf", server="mao_mcp", tool="mao_read_project_doc")
+
+    records = load_skill_registry(project_root, runtime_root)
+    record = next(item for item in records if item.name == "pdf")
+    assert record.mcp_server == "mao_mcp"
+    assert record.mcp_tool == "mao_read_project_doc"
+
+
+def test_import_local_mcp_merges_without_overwriting_grants(tmp_path: Path) -> None:
+    from mao_cli.registry import (
+        MCPServerRecord,
+        MCPToolRecord,
+        import_local_mcp,
+        load_mcp_registry,
+        save_mcp_registry,
+    )
+
+    project_root = tmp_path
+    runtime_root = "runtime"
+
+    existing = [
+        MCPServerRecord(
+            name="dameng_mcp",
+            transport="stdio",
+            command="python",
+            args=["-m", "dameng_mcp"],
+            source="manual",
+            enabled=True,
+            roles=["backend"],
+            models=["mock/backend"],
+            tools=[MCPToolRecord(name="t1", description="")],
+        )
+    ]
+    save_mcp_registry(project_root, runtime_root, existing)
+
+    # Provide a project manifest that re-discovers the same server.
+    (project_root / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "dameng_mcp": {"transport": "stdio", "command": "python", "args": ["-m", "dameng_mcp"]}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import_local_mcp(project_root, runtime_root)
+    records = load_mcp_registry(project_root, runtime_root)
+    record = next(item for item in records if item.name.lower() == "dameng_mcp")
+
+    # Grants / allowlists should be preserved.
+    assert record.roles == ["backend"]
+    assert record.models == ["mock/backend"]
+
+    # Existing tool grants should be preserved.
+    assert [tool.name for tool in record.tools] == ["t1"]
+
+
+def test_import_local_mcp_merges_in_new_builtin_tools(tmp_path: Path) -> None:
+    from mao_cli.registry import MCPServerRecord, MCPToolRecord, import_local_mcp, load_mcp_registry, save_mcp_registry
+
+    project_root = tmp_path
+    runtime_root = "runtime"
+
+    # Existing registry has mao_mcp but with an older tool list.
+    save_mcp_registry(
+        project_root,
+        runtime_root,
+        [
+            MCPServerRecord(
+                name="mao_mcp",
+                transport="stdio",
+                command="python",
+                args=["-m", "mao_cli.main", "mcp-serve", "--transport", "stdio"],
+                source="manual",
+                enabled=True,
+                tools=[MCPToolRecord(name="mao_project_status", description="")],
+            )
+        ],
+    )
+
+    import_local_mcp(project_root, runtime_root)
+    records = load_mcp_registry(project_root, runtime_root)
+    record = next(item for item in records if item.name.lower() == "mao_mcp")
+
+    # New built-in tools should be appended without removing existing ones.
+    tool_names = [tool.name for tool in record.tools]
+    assert "mao_project_status" in tool_names
+    assert "mao_list_mcp_servers" in tool_names
+    assert "mao_read_mcp_server" in tool_names
+
+    # New built-in server record should also exist.
+    fs_record = next(item for item in records if item.name.lower() == "mao_fs")
+    assert fs_record.roles == ["architect"]
+
+
+
+def test_import_local_mcp_discovers_claude_desktop_servers(tmp_path: Path, monkeypatch) -> None:
+    from mao_cli.registry import import_local_mcp, load_mcp_registry
+
+    project_root = tmp_path
+    runtime_root = "runtime"
+
+    appdata = tmp_path / "appdata"
+    claude_dir = appdata / "Claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+
+    (claude_dir / "claude_desktop_config.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "dameng_mcp": {
+                        "command": "python",
+                        "args": ["-m", "dameng_mcp"],
+                        "env": {"DM_TEST": "1"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("APPDATA", str(appdata))
+    # Isolate from real ~/.claude/mcp-servers/ on this machine.
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    import_local_mcp(project_root, runtime_root)
+    records = load_mcp_registry(project_root, runtime_root)
+    record = next(item for item in records if item.name.lower() == "dameng_mcp")
+
+    assert record.transport == "stdio"
+    assert record.command == "python"
+    assert record.args == ["-m", "dameng_mcp"]
+    assert record.env.get("DM_TEST") == "1"
+
+
+
+
+def test_import_local_mcp_tool_probing_populates_registry(tmp_path: Path, monkeypatch) -> None:
+    from mao_cli.registry import import_local_mcp, load_mcp_registry
+
+    project_root = tmp_path
+    runtime_root = "runtime"
+
+    (project_root / ".mcp.json").write_text(
+        json.dumps({"servers": {"dameng_mcp": {"transport": "stdio", "command": "python", "args": ["-m", "dameng_mcp"]}}}),
+        encoding="utf-8",
+    )
+
+    class _FakeTool:
+        def __init__(self, name: str, description: str = ""):
+            self.name = name
+            self.description = description
+
+    import mao_cli.mcp_client as mcp_client
+
+    monkeypatch.setattr(
+        mcp_client,
+        "list_mcp_tools_sync",
+        lambda _record: [_FakeTool("query", "Run query"), _FakeTool("describe", "Describe table")],
+    )
+
+    import_local_mcp(project_root, runtime_root)
+    records = load_mcp_registry(project_root, runtime_root)
+    record = next(item for item in records if item.name.lower() == "dameng_mcp")
+    assert [tool.name for tool in record.tools] == ["query", "describe"]
+
+
+
+def test_discover_mcp_from_claude_code_mcp_servers_dir(tmp_path: Path, monkeypatch) -> None:
+    from mao_cli.registry import _discover_mcp_from_claude_code_dir
+
+    fake_home = tmp_path / "fakehome"
+    mcp_dir = fake_home / ".claude" / "mcp-servers"
+    mcp_dir.mkdir(parents=True)
+    (mcp_dir / "dameng_mcp.py").write_text("# fake mcp server", encoding="utf-8")
+    (mcp_dir / "another_mcp.py").write_text("# another", encoding="utf-8")
+    (mcp_dir / "_private.py").write_text("# ignored", encoding="utf-8")
+    (mcp_dir / "not_python.txt").write_text("ignored", encoding="utf-8")
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    records = _discover_mcp_from_claude_code_dir()
+    names = [r.name for r in records]
+
+    assert "dameng_mcp" in names
+    assert "another_mcp" in names
+    assert "_private" not in names
+    assert "not_python" not in names
+
+    dameng = next(r for r in records if r.name == "dameng_mcp")
+    assert dameng.transport == "stdio"
+    assert dameng.source == "claude-code-mcp-servers"
+    assert str(mcp_dir / "dameng_mcp.py") in " ".join(dameng.args)
+
+
+def test_discover_mcp_from_claude_code_settings_json(tmp_path: Path, monkeypatch) -> None:
+    from mao_cli.registry import _discover_mcp_from_claude_code_dir
+
+    fake_home = tmp_path / "fakehome"
+    claude_dir = fake_home / ".claude"
+    claude_dir.mkdir(parents=True)
+
+    (claude_dir / "settings.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "my_mcp": {"command": "python", "args": ["-m", "my_mcp"], "env": {"KEY": "val"}}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+
+    records = _discover_mcp_from_claude_code_dir()
+    assert len(records) == 1
+    assert records[0].name == "my_mcp"
+    assert records[0].source == "claude-code-settings"
+    assert records[0].env == {"KEY": "val"}
+
+
+def test_architect_bypass_registry_allowlists(tmp_path: Path) -> None:
+    from mao_cli.registry import (
+        MCPServerRecord,
+        MCPToolRecord,
+        SkillRecord,
+        filter_mcp_servers_for,
+        filter_skills_for,
+        save_mcp_registry,
+        save_skill_registry,
+    )
+
+    project_root = tmp_path
+    runtime_root = "runtime"
+
+    save_skill_registry(
+        project_root,
+        runtime_root,
+        [
+            SkillRecord(
+                name="restricted_skill",
+                description="x",
+                path="/tmp/x",
+                source="test",
+                enabled=True,
+                roles=["backend"],
+                models=["mock/backend"],
+            )
+        ],
+    )
+
+    save_mcp_registry(
+        project_root,
+        runtime_root,
+        [
+            MCPServerRecord(
+                name="restricted_mcp",
+                transport="stdio",
+                command="python",
+                args=["-m", "restricted"],
+                source="test",
+                enabled=True,
+                roles=["backend"],
+                models=["mock/backend"],
+                tools=[MCPToolRecord(name="t1", description="")],
+            )
+        ],
+    )
+
+    # Non-architect is restricted.
+    assert not filter_skills_for(project_root, runtime_root, role="frontend", model="mock/frontend")
+    assert not filter_mcp_servers_for(project_root, runtime_root, role="frontend", model="mock/frontend")
+
+    # Architect bypasses allowlists but still requires enabled=true.
+    skills = filter_skills_for(project_root, runtime_root, role="architect", model="mock/architect")
+    mcps = filter_mcp_servers_for(project_root, runtime_root, role="architect", model="mock/architect")
+    assert [s.name for s in skills] == ["restricted_skill"]
+    assert [m.name for m in mcps] == ["restricted_mcp"]
+
+
+
 def test_ownership_enforcement_detects_conflicts() -> None:
     from mao_cli.orchestrator import build_architect_plan
     from mao_cli.config import load_config
@@ -382,6 +705,16 @@ def test_chat_resume_command_restores_session(tmp_path: Path) -> None:
     assert "user> Build a task tracker" in second.stdout
     assert "last_run=" in second.stdout
 
+    # Ensure per-role long-lived memories are persisted into the session JSON.
+    sessions_dir = runtime_root / "sessions"
+    session_files = list(sessions_dir.glob("*.json"))
+    assert session_files
+    payload = json.loads(session_files[0].read_text(encoding="utf-8"))
+    assert "role_memories" in payload
+    assert isinstance(payload["role_memories"], dict)
+    # Mock provider should have produced at least one role memory after the workflow.
+    assert any(payload["role_memories"].get(role, "").strip() for role in ("frontend", "backend", "integration", "reviewer"))
+
 
 def test_chat_approval_queue_commands() -> None:
     runner = CliRunner()
@@ -409,8 +742,22 @@ def test_chat_auto_team_mode_routes_simple_prompt_to_primary_model() -> None:
 
     assert result.exit_code == 0
     assert "calling architect..." in result.stdout
-    assert "architect summary:" in result.stdout
-    assert "frontend:" not in result.stdout
+    # Single-model mode prints the full response (no "architect summary:" prefix).
+    assert "frontend calling frontend..." not in result.stdout
+
+
+def test_chat_auto_team_mode_keeps_direct_fs_request_single_model() -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--mock"],
+        input="创建 tmp/live-test.txt 写入 hello live\n/exit\n",
+    )
+
+    assert result.exit_code == 0
+    assert "calling architect..." in result.stdout
+    assert "frontend calling frontend..." not in result.stdout
+    assert "backend calling backend..." not in result.stdout
 
 
 def test_chat_team_on_forces_team_workflow() -> None:

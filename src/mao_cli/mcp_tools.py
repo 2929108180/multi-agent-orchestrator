@@ -15,6 +15,20 @@ from mao_cli.registry import (
 )
 from mao_cli.sessions import append_session_note, list_sessions, load_session
 from mao_cli.security import ensure_project_path, validate_requirement, validate_run_id
+
+
+def _reject_git_paths(path: Path, *, label: str = "path") -> None:
+    parts = {part.lower() for part in path.parts}
+    if ".git" in parts:
+        raise ValueError(f"{label} cannot point inside .git")
+
+
+def _project_safe_path(relative_or_abs: str | Path, *, must_exist: bool, label: str) -> Path:
+    project_root = _project_root()
+    resolved = ensure_project_path(project_root, relative_or_abs, must_exist=must_exist, label=label)
+    _reject_git_paths(resolved, label=label)
+    return resolved
+
 from mao_cli.skills import append_team_note
 
 
@@ -44,6 +58,11 @@ class SkillListItem(BaseModel):
     name: str
     description: str
     path: str
+
+
+class FSPathMatch(BaseModel):
+    path: str
+    is_dir: bool
 
 
 def _project_root() -> Path:
@@ -193,7 +212,7 @@ def read_available_skill(skill_name: str, *, config_path: str = "configs/local.e
     return json.dumps(entry.model_dump(), indent=2)
 
 
-def list_registered_mcp_servers(*, config_path: str = "configs/local.example.yaml") -> list[dict[str, str | bool]]:
+def list_registered_mcp_servers(*, config_path: str = "configs/local.example.yaml") -> str:
     project_root = _project_root()
     absolute_config = ensure_project_path(
         project_root,
@@ -202,7 +221,17 @@ def list_registered_mcp_servers(*, config_path: str = "configs/local.example.yam
         label="config_path",
     )
     runtime_root = load_config(absolute_config).runtime_root
-    return [record.model_dump() for record in load_mcp_registry(project_root, runtime_root)]
+    summary = []
+    for record in load_mcp_registry(project_root, runtime_root):
+        tool_names = [t.name for t in record.tools] if record.tools else []
+        summary.append({
+            "name": record.name,
+            "transport": record.transport,
+            "enabled": record.enabled,
+            "source": record.source,
+            "tools": tool_names,
+        })
+    return json.dumps(summary, indent=2, ensure_ascii=False)
 
 
 def read_registered_mcp_server(name: str, *, config_path: str = "configs/local.example.yaml") -> str:
@@ -216,6 +245,210 @@ def read_registered_mcp_server(name: str, *, config_path: str = "configs/local.e
     runtime_root = load_config(absolute_config).runtime_root
     record = find_mcp_record(project_root, runtime_root, name)
     return json.dumps(record.model_dump(), indent=2)
+
+
+class FSListDirItem(BaseModel):
+    name: str
+    path: str
+    is_dir: bool
+
+
+def fs_list_dir(path: str = ".") -> list[FSListDirItem]:
+    target = _project_safe_path(path, must_exist=True, label="path")
+    if not target.exists():
+        raise FileNotFoundError(f"Directory not found: {path}")
+    if not target.is_dir():
+        raise ValueError(f"path must be a directory: {path}")
+
+    items: list[FSListDirItem] = []
+    for child in sorted(target.iterdir(), key=lambda p: p.name.lower()):
+        items.append(
+            FSListDirItem(
+                name=child.name,
+                path=str(child.relative_to(_project_root())),
+                is_dir=child.is_dir(),
+            )
+        )
+    return items
+
+
+def _project_relative_path(path: Path) -> str:
+    return str(path.relative_to(_project_root()))
+
+
+def _find_project_paths(
+    query: str,
+    *,
+    exact: bool = False,
+    include_files: bool = True,
+    include_dirs: bool = True,
+    max_results: int = 50,
+) -> list[FSPathMatch]:
+    project_root = _project_root()
+    needle = query.strip().lower()
+    if not needle:
+        raise ValueError("query must not be empty")
+
+    matches: list[FSPathMatch] = []
+    for candidate in project_root.rglob("*"):
+        if len(matches) >= max_results:
+            break
+        try:
+            _reject_git_paths(candidate, label="path")
+        except ValueError:
+            continue
+        name = candidate.name.lower()
+        name_match = name == needle if exact else needle in name
+        if not name_match:
+            continue
+        if candidate.is_file() and include_files:
+            matches.append(FSPathMatch(path=_project_relative_path(candidate), is_dir=False))
+            continue
+        if candidate.is_dir() and include_dirs:
+            matches.append(FSPathMatch(path=_project_relative_path(candidate), is_dir=True))
+    return matches
+
+
+def fs_find_paths(
+    query: str,
+    *,
+    exact: bool = False,
+    include_files: bool = True,
+    include_dirs: bool = True,
+    max_results: int = 50,
+) -> list[FSPathMatch]:
+    return _find_project_paths(
+        query,
+        exact=exact,
+        include_files=include_files,
+        include_dirs=include_dirs,
+        max_results=max_results,
+    )
+
+
+def _numbered_lines(text: str) -> str:
+    """Format text with line numbers like cat -n."""
+    lines = text.splitlines()
+    width = len(str(len(lines))) if lines else 1
+    return "\n".join(f"{i + 1:>{width}}  {line}" for i, line in enumerate(lines))
+
+
+def _diff_text(*, old: str, new: str, path: str) -> str:
+    """Generate a unified-diff-style output for file changes."""
+    import difflib
+
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    fromfile = "/dev/null" if not old_lines else f"a/{path}"
+    diff = difflib.unified_diff(old_lines, new_lines, fromfile=fromfile, tofile=f"b/{path}")
+    return "".join(diff)
+
+
+def fs_read_text(path: str, *, max_chars: int = 200000) -> str:
+    target = _project_safe_path(path, must_exist=True, label="path")
+    if not target.is_file():
+        raise ValueError(f"path must be a file: {path}")
+    text = target.read_text(encoding="utf-8")
+    if len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    rel = str(target.relative_to(_project_root()))
+    return f"--- {rel} ---\n{_numbered_lines(text)}"
+
+
+def fs_write_text(
+    path: str,
+    content: str,
+    *,
+    overwrite: bool = False,
+    confirm: str = "",
+    mkdir_parents: bool = True,
+) -> str:
+    target = _project_safe_path(path, must_exist=False, label="path")
+    rel = _project_relative_path(target)
+
+    old_text = ""
+    is_overwrite = False
+    if target.exists():
+        if not overwrite:
+            raise FileExistsError(f"File already exists: {path}. Set overwrite=true to replace it.")
+        if confirm != "YES":
+            raise ValueError("Refusing to overwrite without confirm=\"YES\".")
+        old_text = target.read_text(encoding="utf-8")
+        is_overwrite = True
+    else:
+        raw_path = str(path)
+        is_bare_name = "/" not in raw_path and "\\" not in raw_path
+        if is_bare_name:
+            collisions = [
+                item.path
+                for item in _find_project_paths(
+                    target.name,
+                    exact=True,
+                    include_files=True,
+                    include_dirs=False,
+                    max_results=10,
+                )
+                if item.path != rel
+            ]
+            if collisions:
+                preview = ", ".join(collisions[:5])
+                raise ValueError(
+                    f"Ambiguous path `{path}`. Existing matches: {preview}. "
+                    "Use the exact relative path instead of a bare filename."
+                )
+
+    if mkdir_parents:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    elif not target.parent.exists():
+        raise FileNotFoundError(f"Parent directory does not exist: {target.parent}")
+
+    target.write_text(content, encoding="utf-8")
+
+    diff = _diff_text(old=old_text, new=content, path=rel)
+    if is_overwrite:
+        return f"overwrite {rel}\n{diff}" if diff else f"overwrite {rel} (no changes)"
+    return f"create {rel}\n{diff}" if diff else f"create {rel} (empty file)"
+
+
+def fs_mkdir(path: str, *, parents: bool = True, exist_ok: bool = True) -> str:
+    target = _project_safe_path(path, must_exist=False, label="path")
+    target.mkdir(parents=parents, exist_ok=exist_ok)
+    return str(target.relative_to(_project_root()))
+
+
+def fs_delete_file(path: str, *, confirm: str) -> str:
+    if confirm != "DELETE":
+        raise ValueError("Refusing to delete without confirm=\"DELETE\".")
+    target = _project_safe_path(path, must_exist=True, label="path")
+    if target == _project_root().resolve():
+        raise ValueError("Refusing to delete the project root.")
+    if not target.is_file():
+        raise ValueError(f"path must be a file: {path}")
+    target.unlink()
+    return str(target.relative_to(_project_root()))
+
+
+def fs_delete_dir(path: str, *, confirm: str, recursive: bool = False) -> str:
+    if confirm != "DELETE":
+        raise ValueError("Refusing to delete without confirm=\"DELETE\".")
+    target = _project_safe_path(path, must_exist=True, label="path")
+    if target == _project_root().resolve():
+        raise ValueError("Refusing to delete the project root.")
+    if not target.is_dir():
+        raise ValueError(f"path must be a directory: {path}")
+
+    if recursive:
+        # Manual recursive delete to avoid accidentally following symlinks outside the project.
+        for child in sorted(target.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if child.is_dir():
+                child.rmdir()
+            else:
+                child.unlink()
+        target.rmdir()
+        return str(target.relative_to(_project_root()))
+
+    target.rmdir()
+    return str(target.relative_to(_project_root()))
 
 
 def write_team_note(note: str, category: str = "general", *, config_path: str = "configs/local.example.yaml") -> str:

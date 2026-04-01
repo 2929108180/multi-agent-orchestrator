@@ -5,7 +5,7 @@
 - saved sessions
 - resume latest
 - resume by id
-- transcript replay
+- transcript replay (on resume)
 - layered memory
 - export session transcript to markdown
   - CLI: `mao session export <session_id> [-o output.md] [-c config.yaml]`
@@ -13,9 +13,10 @@
 
 ## Memory Layers
 
-- session memory
-- task memory
-- review memory
+- session memory (turns/transcript)
+- task memory (recent turn summaries per role)
+- review memory (recent verdict summaries)
+- role memories (long-lived per-role bounded summaries persisted in session JSON)
 
 ## Next Improvements
 

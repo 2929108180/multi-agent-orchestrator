@@ -3,11 +3,12 @@
 ## Current Capabilities
 
 - supervisor-led orchestration
-- `architect / frontend / backend / reviewer`
+- roles: `architect / frontend / backend / integration / reviewer`
 - explicit member toggles for `frontend / backend / integration / reviewer`
 - explicit team mode control
 - member-level enable/disable control
 - worker ownership boundaries
+- per-role long-lived memory injection (`Role memory:`) into worker prompts
 
 ## Current Rules
 

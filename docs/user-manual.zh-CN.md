@@ -106,8 +106,9 @@ mao chat --live --config configs/live.local.yaml
 
 当前支持：
 
-- session memory
-- 分层上下文
+- session memory（turn history + transcript）
+- 角色持久记忆（按角色存储的 bounded 摘要）
+- 分层上下文注入
 - session resume
 - transcript 回放
 - 审批队列
@@ -124,6 +125,7 @@ mao chat --live --config configs/live.local.yaml
 - `/context`
 - `/skills`
 - `/mcp`
+- `/team auto|on|off`
 - `/resume`
 - `/queue`
 - `/review`
@@ -134,6 +136,30 @@ mao chat --live --config configs/live.local.yaml
 - `/last`
 - `/merge`
 
+### 单模型（/team off）文件系统能力（architect）
+
+当你使用单模型模式（`/team off` 或自动路由到 single-model）时，`architect` 角色现在可以通过 `mao_fs` MCP 工具直接对项目文件进行 CRUD（带安全护栏）。
+
+示例（mock）：
+
+```powershell
+mao chat --mock
+```
+
+```text
+/team off
+创建 tmp/hello.txt 写入 hello
+读取 tmp/hello.txt
+删除 tmp/hello.txt
+/exit
+```
+
+说明：
+
+- 覆盖写入需要 `overwrite=true` 且 `confirm="YES"`
+- 删除文件/目录需要 `confirm="DELETE"`
+- `.git/` 路径被拒绝
+
 ### 聊天中管理能力
 
 - `/skill-import-local`
@@ -142,6 +168,7 @@ mao chat --live --config configs/live.local.yaml
 - `/register-mcp <name> <transport> <command|url> [args...]`
 - `/grant-skill role <role> <skill>`
 - `/grant-mcp role <role> <server>`
+- `/bind-skill <skill> <server> <tool>`
 
 ## 会话恢复
 
@@ -150,6 +177,7 @@ mao chat --live --config configs/live.local.yaml
 - session id
 - session history
 - context
+- 角色持久记忆（按角色存储的 bounded 摘要）
 - queue
 - last run
 - 已保存 transcript 的回放
@@ -211,7 +239,7 @@ mao merge list
 
 MAO 通过自己的 registry 管理 skill 和 MCP：
 
-- `runtime/registry/skills.json`
+- `runtime/registry/skills.json`（包含可选 `mcp_server` / `mcp_tool` 绑定字段）
 - `runtime/registry/mcp_servers.json`
 
 ### Skill 命令
@@ -222,6 +250,9 @@ mao skills list
 mao skills show mcp-builder
 mao skills register demo_skill --description "demo skill" --path C:\demo\SKILL.md
 mao skills grant demo_skill --role frontend
+
+# 绑定 skill 到 MCP tool（Skill -> MCP 间接执行）
+mao skills bind pdf mao_mcp mao_read_project_doc
 ```
 
 ### MCP 命令
@@ -238,6 +269,51 @@ mao mcp grant demo_mcp --role reviewer
 
 ```powershell
 mao policy show
+```
+
+## 工具调用（MCP + Skills）
+
+MAO 支持一种跨 provider 的文本协议，使得即使 provider adapter 只返回纯文本，模型也能请求调用工具。
+
+### TOOL_CALL 协议
+
+当模型需要调用工具时，输出一个或多个严格块：
+
+```text
+TOOL_CALL:
+TYPE: mcp|skill
+NAME: <server>.<tool>      # TYPE=mcp
+NAME: <skill_name>         # TYPE=skill
+ARGS_JSON: <单行 JSON 或留空>
+END_TOOL_CALL
+```
+
+MAO 会执行工具（仅限当前 role/model 在 registry 中允许的能力），然后把结果块回灌到模型 prompt：
+
+```text
+TOOL_RESULT:
+TYPE: mcp|skill
+NAME: ...
+OK: yes|no
+OUTPUT:
+<工具输出>
+END_TOOL_RESULT
+```
+
+并在小的 `max_tool_iters` 上限内重复，避免死循环。
+
+### Skill -> MCP 映射（第一版）
+
+Skill 本身不直接执行，需要先绑定到 MCP tool：
+
+```powershell
+mao skills bind <skill> <server> <tool>
+```
+
+或在 chat 内：
+
+```text
+/bind-skill <skill> <server> <tool>
 ```
 
 ## 直连与中转

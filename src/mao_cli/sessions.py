@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 
 from mao_cli.security import bounded_text, sanitize_text, validate_run_id
 
+ROLE_MEMORY_DEFAULT_LIMIT = 2400
+
 SessionMode = Literal["mock", "live"]
 ApprovalItemStatus = Literal[
     "pending",
@@ -50,6 +52,9 @@ class ChatSessionState(BaseModel):
     notes: list[str] = Field(default_factory=list)
     approval_queue: list["ApprovalQueueItem"] = Field(default_factory=list)
     current_approval_id: str = ""
+
+    # Long-lived, per-role, bounded memory summaries (NOT raw user transcript).
+    role_memories: dict[str, str] = Field(default_factory=dict)
 
 
 class ApprovalQueueItem(BaseModel):
@@ -248,15 +253,22 @@ def append_session_note(
     return save_session(project_root, runtime_root, session)
 
 
+def bounded_role_memory(value: str, *, limit: int = ROLE_MEMORY_DEFAULT_LIMIT) -> str:
+    """Bounded, sanitized memory text for role-specific long-lived summaries."""
+
+    return bounded_text(sanitize_text(value), limit=limit)
+
+
 def build_conversation_context(session: ChatSessionState, limit: int = 3) -> str:
     turns = session.turns[-limit:]
     if not turns:
         return ""
     lines = ["Conversation context from recent turns:"]
     for index, turn in enumerate(turns, start=1):
+        request_text = turn.summary or bounded_text(turn.user_input, limit=300)
         lines.extend(
             [
-                f"- Turn {index} request: {bounded_text(turn.user_input, limit=300)}",
+                f"- Turn {index} request: {bounded_text(request_text, limit=300)}",
                 f"  Summary: {bounded_text(turn.summary, limit=300)}",
             ]
         )
@@ -271,9 +283,10 @@ def build_task_memory(session: ChatSessionState, role: str, limit: int = 3) -> s
         return ""
     lines = [f"Task memory for {role}:"]
     for index, turn in enumerate(turns, start=1):
+        request_text = turn.summary or bounded_text(turn.user_input, limit=220)
         lines.extend(
             [
-                f"- Recent request {index}: {bounded_text(turn.user_input, limit=220)}",
+                f"- Recent request {index}: {bounded_text(request_text, limit=220)}",
                 f"  Outcome: {bounded_text(turn.summary, limit=220)}",
             ]
         )
@@ -288,9 +301,10 @@ def build_review_memory(session: ChatSessionState, limit: int = 3) -> str:
         return ""
     lines = ["Review memory:"]
     for index, turn in enumerate(turns, start=1):
+        request_text = turn.summary or bounded_text(turn.user_input, limit=220)
         lines.extend(
             [
-                f"- Reviewed request {index}: {bounded_text(turn.user_input, limit=220)}",
+                f"- Reviewed request {index}: {bounded_text(request_text, limit=220)}",
                 f"  Previous summary: {bounded_text(turn.summary, limit=220)}",
             ]
         )

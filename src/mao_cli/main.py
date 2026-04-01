@@ -18,6 +18,7 @@ from mao_cli.mergeflow import list_merge_candidates
 from mao_cli.registry import (
     assign_mcp_access,
     assign_skill_access,
+    bind_skill_to_mcp,
     find_mcp_record,
     find_skill_record,
     import_local_mcp,
@@ -400,6 +401,7 @@ def skills_show(
                 f"description={record.description}",
                 f"roles={record.roles}",
                 f"models={record.models}",
+                f"mcp={record.mcp_server}.{record.mcp_tool}" if record.mcp_server and record.mcp_tool else "mcp=(unbound)",
             ]
         )
     )
@@ -442,6 +444,27 @@ def skills_grant(
     runtime_root = _runtime_root(project_root, config)
     target = assign_skill_access(project_root, runtime_root, name=name, role=role, model=model)
     console.print(f"granted={name}")
+    console.print(f"registry={target}")
+
+
+@skills_app.command("bind")
+def skills_bind(
+    skill: str = typer.Argument(..., help="Skill name."),
+    server: str = typer.Argument(..., help="MCP server name."),
+    tool: str = typer.Argument(..., help="MCP tool name."),
+    config: Path = typer.Option(
+        Path("configs/local.example.yaml"),
+        "--config",
+        "-c",
+        help="Path to the YAML config file (controls runtime_root).",
+    ),
+) -> None:
+    """Bind a skill to an MCP tool (skill -> server.tool)."""
+    project_root = _project_root()
+    runtime_root = _runtime_root(project_root, config)
+    target = bind_skill_to_mcp(project_root, runtime_root, skill=skill, server=server, tool=tool)
+    console.print(f"bound={skill}")
+    console.print(f"mcp={server}.{tool}")
     console.print(f"registry={target}")
 
 
@@ -518,6 +541,7 @@ def mcp_show(
                 f"command={record.command}",
                 f"args={record.args}",
                 f"url={record.url}",
+                f"env={list(record.env.keys()) if getattr(record, 'env', None) else []}",
                 f"roles={record.roles}",
                 f"models={record.models}",
                 f"tools={len(record.tools)}",

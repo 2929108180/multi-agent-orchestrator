@@ -1,4 +1,9 @@
+from pathlib import Path
+from uuid import uuid4
+
 from mao_cli.mcp_tools import (
+    fs_find_paths,
+    fs_write_text,
     list_available_skills,
     list_runs,
     list_saved_sessions,
@@ -54,3 +59,33 @@ def test_list_available_skills() -> None:
 def test_write_team_note() -> None:
     path = write_team_note("test note from pytest", category="pytest")
     assert path.endswith("pytest.md")
+
+
+def test_fs_write_text_returns_diff_for_new_file() -> None:
+    rel = f"runtime/test-create-{uuid4().hex}.txt"
+    output = fs_write_text(rel, "hello\nworld\n")
+    normalized_rel = rel.replace("/", "\\")
+    assert output.startswith(f"create {normalized_rel}\n")
+    assert "--- /dev/null" in output
+    assert f"+++ b/{normalized_rel}" in output
+    assert "+hello" in output
+    assert "+world" in output
+
+
+def test_fs_find_paths_finds_exact_name() -> None:
+    rel = f"runtime/find-me-{uuid4().hex}.txt"
+    fs_write_text(rel, "hello\n")
+    matches = fs_find_paths(Path(rel).name, exact=True, include_files=True, include_dirs=False)
+    assert any(item.path.endswith(rel.replace("/", "\\")) or item.path.endswith(rel) for item in matches)
+
+
+def test_fs_write_text_rejects_ambiguous_bare_filename() -> None:
+    rel = f"runtime/nested-{uuid4().hex}/same-name.txt"
+    fs_write_text(rel, "hello\n")
+    try:
+        fs_write_text("same-name.txt", "new content\n")
+    except ValueError as exc:
+        assert "Ambiguous path" in str(exc)
+        assert "Use the exact relative path" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for ambiguous bare filename")
